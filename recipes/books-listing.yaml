@@ -1,0 +1,75 @@
+# Books — listing pages only.
+#
+# The simplest useful shape: one page type, repeated items, pagination.
+# books.toscrape.com is a sandbox built for scraping practice.
+#
+#   harvest test recipes/books-listing.yaml
+#   harvest run  recipes/books-listing.yaml -o output/books.csv
+
+name: books-listing
+description: Titles, prices and availability from the catalogue listing pages.
+
+start_urls:
+  - https://books.toscrape.com/
+
+rate_limit:
+  requests_per_second: 1
+
+identity:
+  # Point this at a page describing who you are. Costs nothing, and operators
+  # block an identifiable crawler far less often than an anonymous one.
+  contact: https://example.com/about-my-crawler
+
+crawl:
+  pagination:
+    selector: "li.next a"
+    max_pages: 50
+
+extract:
+  item:
+    selector: "article.product_pod"
+    fields:
+      title:
+        # The `title` attribute holds the full name; the link text is truncated.
+        selector: "h3 a"
+        attr: title
+        required: true
+
+      price:
+        selector: "p.price_color"
+        transform: [clean, currency]     # "£51.77" -> 51.77
+        type: number
+
+      in_stock:
+        selector: "p.instock.availability"
+        transform: [clean, boolean]      # "In stock" -> true
+
+      rating:
+        # The star rating is encoded as a class: `star-rating Three`.
+        selector: "p.star-rating"
+        attr: class
+        transform: ["replace:star-rating ", trim]
+
+      url:
+        selector: "h3 a"
+        attr: href
+        type: url                        # resolved to absolute
+
+      image:
+        selector: "div.image_container img"
+        attr: src
+        type: url
+
+validate:
+  schema:
+    title: { required: true, min_length: 1 }
+    price: { type: number, min: 0 }
+  on_invalid: quarantine
+
+dedupe:
+  strategy: fields
+  key_fields: [title]
+
+output:
+  - output/books-listing.csv
+  - output/books-listing.ndjson

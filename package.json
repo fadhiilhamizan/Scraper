@@ -1,0 +1,51 @@
+{
+  "name": "harvester",
+  "version": "1.0.0",
+  "description": "A professional, modular web scraping framework with declarative recipes, dynamic rendering, anti-blocking, and built-in compliance.",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./transforms": "./src/process/transforms.js",
+    "./storage": "./src/storage/index.js"
+  },
+  "bin": {
+    "harvest": "./bin/harvest.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test:watch": "node --test --watch \"test/*.test.js\"",
+    "lint": "node --check src/index.js",
+    "harvest": "node ./bin/harvest.js"
+  },
+  "keywords": [
+    "scraper",
+    "web-scraping",
+    "crawler",
+    "spider",
+    "playwright",
+    "cheerio",
+    "xpath",
+    "data-extraction",
+    "robots.txt"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "undici": "^7.0.0",
+    "yaml": "^2.5.0"
+  },
+  "optionalDependencies": {
+    "playwright": "^1.62.1"
+  },
+  "files": [
+    "src",
+    "bin",
+    "recipes",
+    "docs",
+    "README.md"
+  ]
+}

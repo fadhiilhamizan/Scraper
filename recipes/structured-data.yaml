@@ -1,0 +1,117 @@
+# Structured data — the most durable way to scrape.
+#
+# Most commerce, recipe, article, event and job sites publish JSON-LD so search
+# engines can read them. They can't break it without losing search rankings,
+# which makes it far more stable than any CSS selector you could write.
+#
+# Find out what a page publishes:
+#   harvest inspect <url>
+#
+# This recipe reads JSON-LD first and falls back to CSS, so it keeps working
+# either way.
+
+name: structured-data
+description: Product data from JSON-LD, with CSS fallbacks.
+
+start_urls:
+  - https://www.example.com/product/12345    # replace with a real product page
+
+rate_limit:
+  requests_per_second: 1
+
+identity:
+  contact: https://example.com/about-my-crawler
+
+extract:
+  fields:
+    name:
+      from: jsonld
+      # `entity` filters by schema.org @type. It is deliberately separate from
+      # `type`, which is the *output* type of the field.
+      entity: Product
+      path: name
+      type: string
+      required: true
+      # Each fallback replaces the source entirely; `transform` and `type` are
+      # inherited from above.
+      fallback:
+        - { selector: "h1[itemprop='name']" }
+        - { from: og, path: title }
+        - { selector: "h1" }
+
+    price:
+      from: jsonld
+      entity: Product
+      path: offers.price          # works whether `offers` is an object or a list
+      transform: [number]
+      type: number
+      fallback:
+        - { selector: "[itemprop='price']", attr: content, transform: [number] }
+        - { selector: ".price", transform: [clean, currency] }
+
+    currency:
+      from: jsonld
+      entity: Product
+      path: offers.priceCurrency
+      fallback:
+        - { selector: "[itemprop='priceCurrency']", attr: content }
+        - { selector: ".price", transform: [currencyCode] }
+
+    in_stock:
+      from: jsonld
+      entity: Product
+      path: offers.availability
+      # "https://schema.org/InStock" -> true, ".../OutOfStock" -> false
+      transform: ["test:InStock"]
+      fallback:
+        - { selector: ".stock-status", transform: [clean, boolean] }
+
+    sku:
+      from: jsonld
+      entity: Product
+      path: sku
+      fallback:
+        - { selector: "[itemprop='sku']" }
+
+    brand:
+      from: jsonld
+      entity: Product
+      path: brand.name
+      fallback:
+        - { from: microdata, entity: Product, path: brand }
+
+    rating:
+      from: jsonld
+      entity: Product
+      path: aggregateRating.ratingValue
+      transform: [number]
+      type: number
+
+    review_count:
+      from: jsonld
+      entity: Product
+      path: aggregateRating.reviewCount
+      transform: [int]
+      type: integer
+
+    image:
+      from: jsonld
+      entity: Product
+      path: image
+      transform: [first]           # `image` is often an array
+      type: url
+      fallback:
+        - { from: og, path: image }
+
+    # Non-DOM sources are useful for provenance too.
+    scraped_from:
+      from: url
+
+validate:
+  schema:
+    name: { required: true, min_length: 1 }
+    price: { type: number, min: 0 }
+  on_invalid: quarantine
+
+output:
+  - output/products.ndjson

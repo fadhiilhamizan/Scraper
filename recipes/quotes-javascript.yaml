@@ -1,0 +1,88 @@
+# Quotes — a JavaScript-rendered page.
+#
+# https://quotes.toscrape.com/js/ renders its content from a JS array, so the
+# served HTML contains no quotes at all. `render.mode: auto` fetches over plain
+# HTTP first and only starts a browser because `wait_for_selector` didn't match.
+#
+# Requires Playwright:
+#   npm install playwright && npx playwright install chromium
+#
+#   harvest run recipes/quotes-javascript.yaml
+#
+# Compare with the non-JS version to see the difference:
+#   harvest inspect https://quotes.toscrape.com/
+#   harvest inspect https://quotes.toscrape.com/js/
+
+name: quotes-javascript
+description: Quotes from the JavaScript-rendered variant of the sandbox.
+
+start_urls:
+  - https://quotes.toscrape.com/js/
+
+render:
+  mode: auto
+  engine: chromium
+  wait_until: domcontentloaded
+
+  # The decisive test for `auto`: if this selector is already present in the
+  # HTML response, no browser is started at all.
+  wait_for_selector: "div.quote"
+
+  # Images and fonts are most of the page weight and hold no data. Blocking
+  # them is roughly 3x faster and much gentler on the site's bandwidth.
+  block_resources: [image, media, font]
+
+  actions:
+    # Cookie banners are the most common blocker and don't always appear —
+    # `optional` is what stops an absent banner failing the page.
+    - { type: click, selector: "#accept-cookies", optional: true }
+
+# Browsers are expensive; keep concurrency low.
+concurrency: 2
+concurrency_per_host: 1
+
+rate_limit:
+  requests_per_second: 1
+
+identity:
+  contact: https://example.com/about-my-crawler
+
+crawl:
+  pagination:
+    selector: "li.next a"
+    max_pages: 10
+
+extract:
+  item:
+    selector: "div.quote"
+    fields:
+      text:
+        selector: "span.text"
+        transform: [clean]
+        required: true
+
+      author:
+        selector: "small.author"
+        transform: [clean]
+
+      # The /js/ variant renders from a JS array and omits the "(about)" link
+      # that the server-rendered pages carry, so this is optional here. Without
+      # `default`, the run would report it as a broken selector — which is
+      # exactly what you want when a field is meant to be present.
+      author_url:
+        selector: "span a[href*='/author/']"
+        attr: href
+        type: url
+        default: null
+
+      tags:
+        selector: "a.tag"
+        all: true                # collect every match into an array
+        transform: [clean, unique]
+
+dedupe:
+  strategy: fields
+  key_fields: [text]
+
+output:
+  - output/quotes.json

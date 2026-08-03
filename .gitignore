@@ -1,0 +1,8 @@
+node_modules/
+output/
+.harvester/
+.cache/
+*.log
+.env
+.DS_Store
+coverage/

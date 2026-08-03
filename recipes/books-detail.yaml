@@ -1,0 +1,117 @@
+# Books — crawl the catalogue, then scrape each product page.
+#
+# Demonstrates the two-level pattern: `crawl.follow` queues detail links with a
+# label, `crawl.pagination` walks the listing, and `extract` is keyed by label
+# so each page type gets its own fields.
+#
+#   harvest run recipes/books-detail.yaml --limit 30 -o output/books.ndjson
+
+name: books-detail
+description: Full product records, crawled from the catalogue.
+
+start_urls:
+  - url: https://books.toscrape.com/
+    label: listing
+
+concurrency: 4
+concurrency_per_host: 2
+
+rate_limit:
+  requests_per_second: 1
+  jitter_ms: 250
+
+identity:
+  contact: https://example.com/about-my-crawler
+
+crawl:
+  max_depth: 2
+  allowed_domains:
+    - books.toscrape.com
+
+  # Pagination is depth-exempt — page 40 of a listing is the same "level" as
+  # page 1, so a long catalogue isn't truncated by max_depth.
+  pagination:
+    selector: "li.next a"
+    max_pages: 50
+
+  follow:
+    - selector: "article.product_pod h3 a"
+      label: detail
+      on: listing            # only follow these from listing pages
+
+  deny_patterns:
+    - "\\.(jpg|jpeg|png|gif|css|js)$"
+
+extract:
+  # Listing pages exist to be crawled; they contribute no records.
+  listing:
+    fields: {}
+
+  detail:
+    fields:
+      title:
+        selector: "div.product_main h1"
+        required: true
+
+      price:
+        selector: "div.product_main p.price_color"
+        transform: [clean, currency]
+        type: number
+
+      availability:
+        # "In stock (22 available)" -> 22
+        selector: "div.product_main p.availability"
+        transform: [clean, digits, int]
+        type: integer
+
+      rating:
+        selector: "div.product_main p.star-rating"
+        attr: class
+        transform: ["replace:star-rating ", trim]
+
+      description:
+        # The description is the paragraph *after* the #product_description
+        # heading — a sibling combinator, not a descendant.
+        selector: "#product_description ~ p"
+        transform: [clean]
+
+      category:
+        # Breadcrumb: Home > Books > <category> > <title>
+        selector: "ul.breadcrumb li:nth-child(3) a"
+        transform: [clean]
+
+      # The product information table is a two-column key/value list. XPath can
+      # select a cell by its neighbour's text, which CSS cannot express.
+      upc:
+        xpath: "//th[text()='UPC']/following-sibling::td"
+
+      tax:
+        xpath: "//th[text()='Tax']/following-sibling::td"
+        transform: [currency]
+        type: number
+
+      review_count:
+        xpath: "//th[text()='Number of reviews']/following-sibling::td"
+        transform: [int]
+        type: integer
+
+      url:
+        from: url
+
+validate:
+  schema:
+    title: { required: true, min_length: 1 }
+    price: { type: number, min: 0 }
+    availability: { type: integer, min: 0 }
+  min_filled_fields: 3
+  on_invalid: quarantine
+
+dedupe:
+  strategy: fields
+  key_fields: [upc]
+
+output:
+  - output/books-detail.ndjson
+  - output/books-detail.xlsx
+
+report: output/books-detail-report.json
