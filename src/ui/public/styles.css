@@ -89,6 +89,12 @@
 
 * { box-sizing: border-box; }
 
+/* The UA rule for `[hidden]` is `display: none`, which any author `display`
+   loses to — `.modal-backdrop { display: flex }` beat it and left an empty
+   dialog sitting over the page on every load. Assert it explicitly so `hidden`
+   means hidden everywhere. */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0; height: 100%;
   font-family: var(--sans);
@@ -325,7 +331,12 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
   font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
   color: var(--text-faint); background: var(--bg-sunken);
   border-right: 1px solid var(--border);
-  user-select: none; overflow: hidden; min-width: 44px;
+  user-select: none; overflow: hidden; min-width: 46px;
+  /* The numbers are newline-separated; without `pre` they reflow into a
+     paragraph and squeeze the textarea to nothing. `flex: none` stops the
+     gutter growing or shrinking with the content. */
+  white-space: pre;
+  flex: none;
 }
 #editor {
   flex: 1; border: 0; border-radius: 0; resize: none; padding: 12px 14px;
@@ -363,8 +374,13 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 
 .summary-list { font-size: 12.5px; display: grid; gap: 5px; }
 .summary-row { display: flex; justify-content: space-between; gap: 10px; }
-.summary-row span:first-child { color: var(--text-dim); }
-.summary-row span:last-child { text-align: right; font-weight: 540; word-break: break-word; }
+.summary-row span:first-child { color: var(--text-dim); flex: none; }
+.summary-row span:last-child {
+  text-align: right; font-weight: 540; min-width: 0;
+  /* Truncate rather than wrap: a long path used to push the panel to four
+     lines. The full value is on the title attribute. */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .test-panel {
   margin-top: 14px; background: var(--bg-panel);

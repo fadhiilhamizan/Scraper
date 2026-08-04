@@ -7,8 +7,8 @@ validation, de-duplication and output — and tells you when a site changes.
 **Point-and-click, in your browser:**
 
 ```bash
-npm install && npm link
-harvest ui
+npm install
+npm run ui
 ```
 
 Paste a URL, and it finds the selectors, writes the recipe, tests it, and shows
@@ -21,6 +21,8 @@ harvest inspect https://books.toscrape.com --generate books.yaml   # find the se
 harvest test books.yaml                                            # check them
 harvest run books.yaml -o books.csv                                # run it
 ```
+
+The `harvest` command needs `npm link` first — see [Install](#install).
 
 ---
 
@@ -49,13 +51,26 @@ tell you when to stop rather than how to push through.
 
 ```bash
 npm install
+```
+
+That's enough to use it — via npm scripts, which always work:
+
+```bash
+npm run ui                          # the web interface
+npm run harvest -- run r.yaml       # the CLI (note the `--`)
+node bin/harvest.js run r.yaml      # or by path
+```
+
+To type `harvest` instead, register the command once:
+
+```bash
 npm link
 ```
 
-`npm link` is what puts the `harvest` command on your PATH — without it you'll
-get *"harvest is not recognized"*. If you'd rather not link, every example below
-works with `node bin/harvest.js` in place of `harvest`, or `npm run ui` for the
-interface.
+Then **open a new terminal** — a shell caches which commands exist when it
+starts, so a window you already had open won't find it. If you see *"harvest is
+not recognized"*, that's why; see
+[Troubleshooting](docs/10-troubleshooting.md#harvest-is-not-recognized-as-a-command).
 
 For JavaScript-heavy sites:
 

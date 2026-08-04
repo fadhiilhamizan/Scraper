@@ -11,35 +11,50 @@ harvest : The term 'harvest' is not recognized as the name of a cmdlet…
 bash: harvest: command not found
 ```
 
-The command hasn't been registered on your PATH. From the project folder:
+**The fix that always works** — run it from the project folder, no setup needed:
+
+```bash
+npm run ui
+npm run harvest -- run recipe.yaml -o data.csv    # note the `--` before arguments
+node bin/harvest.js run recipe.yaml -o data.csv   # or by path
+```
+
+### Why the `harvest` command isn't there
+
+It only exists after `npm link` registers it:
 
 ```bash
 npm install
 npm link
-```
-
-Then check:
-
-```bash
 harvest --version
 ```
 
-**Still not found after linking?** Open a *new* terminal. A shell reads its PATH
-when it starts, so a window you had open before linking won't see the new
-command.
+**Already ran `npm link` and it still fails?** Open a **new terminal**. This is
+the usual cause. A shell decides which commands exist when it starts and caches
+that — PowerShell especially. The window you ran `npm link` in will keep saying
+"not recognized" no matter how many times you retry; a fresh window finds it
+immediately.
 
-**Don't want to link?** Run it by path instead — this always works:
+To confirm the command really was installed, check for the shim:
 
-```bash
-node bin/harvest.js ui
-node bin/harvest.js run recipe.yaml -o data.csv
+```powershell
+Get-ChildItem "$env:APPDATA\npm\harvest*"        # Windows
 ```
 
-Or via npm scripts (note the `--` before arguments):
+```bash
+ls "$(npm config get prefix)/bin/harvest"        # macOS / Linux
+```
+
+If those files exist, linking worked and you only need a new terminal.
+
+**`npm link` fails with a permissions error?** On Linux and macOS the global
+npm prefix may need elevation. Rather than `sudo`, point npm at a folder you
+own:
 
 ```bash
-npm run ui
-npm run harvest -- run recipe.yaml -o data.csv
+npm config set prefix ~/.npm-global
+export PATH="$HOME/.npm-global/bin:$PATH"   # add this to your shell profile
+npm link
 ```
 
 **`npm link` fails with a permissions error?** On Linux and macOS the global
@@ -51,6 +66,17 @@ npm config set prefix ~/.npm-global
 export PATH="$HOME/.npm-global/bin:$PATH"   # add this to your shell profile
 npm link
 ```
+
+---
+
+## The interface looks broken
+
+An empty dialog floating over the page, or line numbers spilling across the top
+of the editor, means the browser is holding a stale stylesheet. Hard-reload:
+`Ctrl`+`Shift`+`R` (`Cmd`+`Shift`+`R` on macOS).
+
+The server sends `cache-control: no-store`, so this should only ever happen
+immediately after an update.
 
 ---
 

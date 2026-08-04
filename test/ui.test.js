@@ -125,6 +125,38 @@ test('the token is injected into the page, not exposed on an endpoint', async ()
   assert.match(csp, /frame-ancestors 'none'/);
 });
 
+test('the stylesheet keeps the rules the layout depends on', async () => {
+  // Two CSS regressions that broke the interface badly enough to be worth
+  // pinning: an author `display` beat the UA `[hidden]` rule and left an empty
+  // dialog over the page, and a missing `white-space: pre` made the line-number
+  // gutter reflow into a paragraph and crush the editor.
+  const css = await (await fetch(`${root()}/styles.css`)).text();
+
+  assert.match(css, /\[hidden\]\s*{\s*display:\s*none\s*!important/,
+    '`hidden` must beat any author display rule');
+
+  const gutter = /\.gutter\s*{([^}]*)}/.exec(css)?.[1] ?? '';
+  assert.match(gutter, /white-space:\s*pre/, 'line numbers must not reflow');
+  assert.match(gutter, /flex:\s*none/, 'the gutter must not grow or shrink');
+});
+
+test('a JavaScript recipe is reported as read-only', async () => {
+  await fs.writeFile(path.join(workspace, 'js-recipe.js'),
+    `export default { start_urls: ['${base}'], extract: { fields: { title: 'h1' } } };\n`, 'utf8');
+
+  const js = await call('GET', '/api/recipes/js-recipe.js');
+  assert.equal(js.status, 200);
+  assert.equal(js.body.editable, false, 'a .js recipe cannot be safely edited in a textarea');
+  assert.equal(js.body.valid, true);
+
+  await fs.writeFile(path.join(workspace, 'yaml-recipe.yaml'), RECIPE(base), 'utf8');
+  const yaml = await call('GET', '/api/recipes/yaml-recipe.yaml');
+  assert.equal(yaml.body.editable, true);
+
+  await fs.unlink(path.join(workspace, 'js-recipe.js'));
+  await fs.unlink(path.join(workspace, 'yaml-recipe.yaml'));
+});
+
 test('static serving refuses path traversal', async () => {
   const res = await fetch(`${root()}/../package.json`, { redirect: 'manual' });
   assert.ok(res.status === 403 || res.status === 404, `expected a refusal, got ${res.status}`);

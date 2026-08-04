@@ -475,12 +475,18 @@ function markSaved() {
 async function openRecipe(name) {
   try {
     const recipe = await api('GET', `/api/recipes/${encodeURIComponent(name)}`);
-    state.recipe = { name, text: recipe.text, saved: true };
+    const readOnly = recipe.editable === false;
+    state.recipe = { name, text: recipe.text, saved: true, readOnly };
     $('#editor-name').textContent = name;
     editor.value = recipe.text;
-    editor.readOnly = recipe.editable === false;
+    editor.readOnly = readOnly;
     syncGutter();
     markSaved();
+
+    // A JavaScript recipe can import other modules, so editing it belongs in a
+    // real editor — say so rather than letting keystrokes silently do nothing.
+    $('#btn-save').disabled = readOnly;
+    $('#editor-readonly').hidden = !readOnly;
     renderValidation(recipe);
     $('#test-panel').hidden = true;
     showView('editor');
@@ -522,22 +528,38 @@ function renderValidation(result) {
 
   const s = result.summary;
   if (s) {
+    // Absolute paths are long enough to wrap into four lines and swamp the
+    // panel — show the file name, keep the full path as a tooltip.
+    const shorten = (p) => String(p).split(/[/\\]/).pop() || String(p);
+
     const rows = [
-      ['Start URLs', s.startUrls.length === 1 ? s.startUrls[0] : `${s.startUrls.length} URLs`],
+      ['Start URLs', s.startUrls.length === 1 ? s.startUrls[0] : `${s.startUrls.length} URLs`, s.startUrls.join('\n')],
       ['Item selector', s.itemSelector || '—'],
       ['Fields', s.fields.length ? s.fields.join(', ') : (s.labels.length ? `by label: ${s.labels.join(', ')}` : '—')],
       ['Rate', `${s.requestsPerSecond}/s · ${s.concurrency} workers`],
       ['robots.txt', s.robots ? 'enforced' : 'DISABLED'],
       ['Rendering', s.render],
       ['Page limit', s.maxPages ?? 'unlimited'],
-      ['Output', s.outputs.length ? s.outputs.join(', ') : 'stdout'],
+      [
+        'Output',
+        s.outputs.length ? s.outputs.map(shorten).join(', ') : 'stdout',
+        s.outputs.join('\n'),
+      ],
     ];
+
     const list = el('div', { class: 'summary-list', style: 'margin-top:12px' });
-    for (const [key, value] of rows) {
+    for (const [key, value, tooltip] of rows) {
       list.append(el('div', { class: 'summary-row' },
-        el('span', { text: key }), el('span', { text: String(value) })));
+        el('span', { text: key }),
+        el('span', { text: String(value), title: tooltip ?? String(value) })));
     }
     body.append(list);
+
+    if (!s.robots) {
+      body.append(el('div', { class: 'issue warn', style: 'margin-top:8px' },
+        el('span', { class: 'issue-mark', text: '!' }),
+        el('span', { text: 'robots.txt is disabled — make sure you have another basis for access.' })));
+    }
   }
 
   $('#btn-run').disabled = !result.valid;
