@@ -18,8 +18,8 @@ import { autoDetectNextPage } from '../parse/pagination.js';
 import { needsRendering } from '../render/renderer.js';
 import { parseCurrency } from '../process/transforms.js';
 
-/** Class-name fragments that are generated per-build and unsafe to select on. */
-const VOLATILE_CLASS = /^(?:[a-z]{1,3}[-_]?)?(?:[0-9a-f]{5,}|[a-zA-Z]+_[0-9a-z]{5,}|css-[0-9a-z]+|sc-[0-9a-zA-Z]+|jsx-\d+|svelte-[0-9a-z]+|_[0-9a-z]{5,})$/;
+/** Prefixes used by CSS-in-JS libraries; everything after them is a build hash. */
+const HASH_PREFIX = /^(?:css|sc|jsx|svelte|emotion)-/i;
 
 /**
  * Class names that describe layout rather than meaning.
@@ -28,10 +28,38 @@ const VOLATILE_CLASS = /^(?:[a-z]{1,3}[-_]?)?(?:[0-9a-f]{5,}|[a-zA-Z]+_[0-9a-z]{
  * are very often the real record container (`.item`, `.product-card`), and
  * discarding them was losing the best candidate on plenty of sites.
  */
-const GENERIC_CLASS = /^(?:col(?:-\w+)?|container|wrapper|inner|outer|content|flex|grid|clearfix|d-\w+|m[trblxy]?-\d|p[trblxy]?-\d|w-\d+|h-\d+|text-\w+|bg-\w+|justify-\w+|items-\w+)$/;
+const GENERIC_CLASS = /^(?:col(?:-\w+)*|container|wrapper|inner|outer|content|flex|grid|clearfix|d-\w+|m[trblxy]?-\d+|p[trblxy]?-\d+|w-\d+|h-\d+|text-\w+|bg-\w+|justify-\w+|items-\w+)$/;
 
-const isStableClass = (name) =>
-  name.length > 1 && !VOLATILE_CLASS.test(name) && !GENERIC_CLASS.test(name);
+/**
+ * Does this token look like a generated hash rather than a word?
+ *
+ * The digit requirement is what keeps ordinary names safe: `price_color` and
+ * `product_pod` are structurally identical to `Button_a1b2c` without it, and
+ * discarding them throws away the best selectors on plenty of sites.
+ */
+function looksLikeHash(token) {
+  return (
+    token.length >= 4 &&
+    /^[a-z0-9]+$/i.test(token) &&
+    /\d/.test(token) &&
+    !/^\d+$/.test(token)
+  );
+}
+
+/** Is this class name worth building a selector on? */
+function isStableClass(name) {
+  if (!name || name.length <= 1) return false;
+  if (GENERIC_CLASS.test(name)) return false;
+  if (HASH_PREFIX.test(name)) return false;
+  if (looksLikeHash(name)) return false;
+
+  // CSS modules: `Block_element__hash`, `Block_hash`, `_hash`.
+  if (name.includes('_')) {
+    const segments = name.split(/_+/).filter(Boolean);
+    if (segments.length && looksLikeHash(segments[segments.length - 1])) return false;
+  }
+  return true;
+}
 
 /** A structural fingerprint used to spot repeated siblings. */
 function signature($, el) {
@@ -52,7 +80,7 @@ export function buildSelector($, el, { scoped = false } = {}) {
   const $el = $(el);
 
   const id = $el.attr('id');
-  if (id && !/\d{4,}/.test(id) && !VOLATILE_CLASS.test(id)) return `#${CSS_escape(id)}`;
+  if (id && !/\d{4,}/.test(id) && isStableClass(id)) return `#${CSS_escape(id)}`;
 
   const testId = $el.attr('data-testid') ?? $el.attr('data-test') ?? $el.attr('data-qa');
   if (testId) return `[data-testid="${testId}"]`;
@@ -74,6 +102,66 @@ export function buildSelector($, el, { scoped = false } = {}) {
 
 function CSS_escape(value) {
   return String(value).replace(/([^\w-])/g, '\\$1');
+}
+
+/**
+ * Produce a selector that actually resolves to `el` **first** within
+ * `container`.
+ *
+ * `buildSelector` alone often returns something too generic — a product card
+ * with an image link and a title link both reduce to `a`, and extraction takes
+ * the first match, so half the suggested fields would silently come back empty.
+ * This qualifies the selector until it unambiguously points at the element we
+ * chose, and verifies each candidate before returning it.
+ *
+ * @param {*} $ cheerio instance
+ * @param {*} el target element
+ * @param {*} container cheerio selection to scope within (may be the body)
+ * @param {string} [attr] the attribute the field will read, if any
+ * @returns {string}
+ */
+function refineSelector($, el, container, attr = null) {
+  const scoped = true;
+  const base = buildSelector($, el, { scoped });
+
+  /** Does `selector` pick `el` as its first match inside the container? */
+  const resolves = (selector) => {
+    try {
+      return container.find(selector).get(0) === el;
+    } catch {
+      return false;
+    }
+  };
+
+  if (resolves(base)) return base;
+
+  // Qualify by the attribute we're about to read — `a[title]` cleanly
+  // distinguishes a title link from a bare image link.
+  if (attr && attr !== 'text' && $(el).attr(attr) != null) {
+    const qualified = `${base}[${attr}]`;
+    if (resolves(qualified)) return qualified;
+  }
+
+  // Walk up, prefixing ancestors: `h3 a`, then `.card h3 a`.
+  let node = el.parent;
+  let prefix = '';
+  for (let depth = 0; depth < 3 && node && node.type === 'tag'; depth += 1) {
+    const parentSelector = buildSelector($, node, { scoped });
+    prefix = prefix ? `${parentSelector} ${prefix}` : parentSelector;
+    const candidate = `${prefix} ${base}`;
+    if (resolves(candidate)) return candidate;
+    node = node.parent;
+  }
+
+  // Last resort: position among siblings of the same tag.
+  const siblings = (el.parent?.children ?? []).filter((n) => n.type === 'tag' && n.name === el.name);
+  const index = siblings.indexOf(el);
+  if (index >= 0) {
+    const positional = `${el.name}:nth-of-type(${index + 1})`;
+    if (resolves(positional)) return positional;
+  }
+
+  return base;
 }
 
 /**
@@ -114,15 +202,23 @@ export function findRepeatedBlocks(page, { minCount = 3, limit = 8 } = {}) {
     const headings = $sample.find('h1,h2,h3,h4,h5,h6').length;
     const descendants = $sample.find('*').length;
 
-    // Score: repetition is necessary but content richness is what tells a
-    // product card apart from a nav menu.
+    // Score: repetition is necessary but not sufficient. Content richness is
+    // what separates a product card from a row of tag links — and repetition
+    // beyond ~25 carries almost no extra information, so it is capped low
+    // enough that a very common small element can't outrank a real record.
     let score = 0;
-    score += Math.min(group.elements.length, 40) * 2;
-    score += Math.min(text.length / 40, 15);
+    score += Math.min(group.elements.length, 25) * 1.5;
+    score += Math.min(text.length / 25, 20);
     score += links > 0 ? 8 : -6;
     score += images > 0 ? 5 : 0;
     score += headings > 0 ? 10 : 0;
-    score += descendants >= 2 && descendants <= 60 ? 8 : -4;
+
+    // A record is composite by definition. A leaf element — `<a class="tag">` —
+    // is a *field*, never a container, however often it repeats.
+    if (descendants === 0) score -= 35;
+    else if (descendants >= 2 && descendants <= 60) score += 8;
+    else score -= 4;
+
     if (group.signature.includes('[itemscope]')) score += 20;
 
     // Penalise things that are structurally navigation.
@@ -172,32 +268,44 @@ export function suggestFields(page, containerSelector = null) {
   if (container.length === 0) return {};
 
   const fields = {};
-  const scoped = (sel) => (containerSelector ? sel : sel);
+  // Two fields may legitimately share a selector when they read different
+  // things — `a` for the href and `a` for the title attribute.
   const seen = new Set();
 
-  const addField = (name, spec) => {
-    if (fields[name] || seen.has(spec.selector)) return;
-    fields[name] = spec;
-    seen.add(spec.selector);
+  const addField = (name, element, spec) => {
+    if (fields[name] || !element) return;
+    const selector = refineSelector($, element, container, spec.attr);
+    const key = `${selector}|${spec.attr ?? 'text'}`;
+    if (seen.has(key)) return;
+    fields[name] = { selector, ...spec };
+    seen.add(key);
   };
 
   // Title: the first heading, or a link with substantial text.
   const heading = container.find('h1, h2, h3, [itemprop="name"], .title, .name').first();
   if (heading.length) {
-    addField('title', {
-      selector: scoped(buildSelector($, heading.get(0), { scoped: !!containerSelector })),
-      transform: ['clean'],
-    });
+    // Listings routinely truncate the visible text and keep the full value in a
+    // `title` attribute on the heading or the link inside it. Prefer whichever
+    // actually holds more.
+    const visible = heading.text().replace(/\s+/g, ' ').trim();
+    const holder = heading.is('[title]') ? heading : heading.find('[title]').first();
+    const attrValue = holder.attr('title')?.trim();
+
+    if (attrValue && attrValue.length > visible.length) {
+      addField('title', holder.get(0), { attr: 'title' });
+    } else {
+      addField('title', heading.get(0), { transform: ['clean'] });
+    }
   }
 
-  // URL: the first link, preferring one that wraps the heading.
-  const link = container.find('a[href]').first();
+  // URL: prefer the link wrapping the heading — an image link often comes first
+  // in the markup but is the less useful of the two.
+  const headingLink = heading.length
+    ? (heading.is('a[href]') ? heading : heading.find('a[href]').first())
+    : $([]);
+  const link = headingLink.length ? headingLink : container.find('a[href]').first();
   if (link.length) {
-    addField('url', {
-      selector: scoped(buildSelector($, link.get(0), { scoped: !!containerSelector })),
-      attr: 'href',
-      type: 'url',
-    });
+    addField('url', link.get(0), { attr: 'href', type: 'url' });
   }
 
   // Price: any element whose text parses as currency.
@@ -212,18 +320,13 @@ export function suggestFields(page, containerSelector = null) {
     if (parseCurrency(text)?.amount != null) priceEl = el;
   });
   if (priceEl) {
-    addField('price', {
-      selector: scoped(buildSelector($, priceEl, { scoped: !!containerSelector })),
-      transform: ['currency'],
-      type: 'number',
-    });
+    addField('price', priceEl, { transform: ['currency'], type: 'number' });
   }
 
   // Image.
   const image = container.find('img[src], img[data-src]').first();
   if (image.length) {
-    addField('image', {
-      selector: scoped(buildSelector($, image.get(0), { scoped: !!containerSelector })),
+    addField('image', image.get(0), {
       attr: image.attr('src') ? 'src' : 'data-src',
       type: 'url',
     });
@@ -232,8 +335,7 @@ export function suggestFields(page, containerSelector = null) {
   // Date.
   const time = container.find('time[datetime], [itemprop="datePublished"]').first();
   if (time.length) {
-    addField('date', {
-      selector: scoped(buildSelector($, time.get(0), { scoped: !!containerSelector })),
+    addField('date', time.get(0), {
       attr: time.attr('datetime') ? 'datetime' : 'text',
       transform: ['date'],
     });
@@ -250,10 +352,38 @@ export function suggestFields(page, containerSelector = null) {
     }
   });
   if (best) {
-    addField('description', {
-      selector: scoped(buildSelector($, best, { scoped: !!containerSelector })),
-      transform: ['clean'],
-    });
+    addField('description', best, { transform: ['clean'] });
+  }
+
+  // Nothing above matched the site's vocabulary? Fall back to structure: any
+  // leaf element carrying text and a meaningful class is very likely a field,
+  // and its class name is what the site's own authors called it.
+  if (Object.keys(fields).length < 2) {
+    const usedClasses = new Set();
+    for (const node of container.find('[class]').toArray()) {
+      if (Object.keys(fields).length >= 8) break;
+      const $node = $(node);
+      if ($node.children().length > 0) continue;
+
+      const text = $node.text().replace(/\s+/g, ' ').trim();
+      if (!text || text.length > 300) continue;
+
+      const className = ($node.attr('class') ?? '').split(/\s+/).find(isStableClass);
+      if (!className || usedClasses.has(className)) continue;
+      usedClasses.add(className);
+
+      // Strip a BEM block prefix so `.quote__author` becomes `author`.
+      const name = className
+        .replace(/^.*?[-_]{2}/, '')
+        .replace(/[^a-z0-9]+/gi, '_')
+        .replace(/^_+|_+$/g, '')
+        .toLowerCase();
+      if (!name || /^\d/.test(name) || fields[name]) continue;
+
+      // Repeating within one record means it's a list, not a single value.
+      const repeats = container.find(`.${CSS_escape(className)}`).length > 1;
+      addField(name, node, { transform: ['clean'], ...(repeats ? { all: true } : {}) });
+    }
   }
 
   return fields;
@@ -307,9 +437,21 @@ export function analyzePage({
   }
 
   const blocks = findRepeatedBlocks(page);
-  const bestBlock = blocks[0] ?? null;
 
-  const listFields = bestBlock ? suggestFields(page, bestBlock.selector) : {};
+  // Take the highest-scoring container that actually yields fields. A container
+  // we can't extract anything from is the wrong container, whatever it scored —
+  // and picking it would generate a recipe that silently produces no records.
+  let bestBlock = null;
+  let listFields = {};
+  for (const block of blocks) {
+    const candidate = suggestFields(page, block.selector);
+    if (Object.keys(candidate).length > 0) {
+      bestBlock = block;
+      listFields = candidate;
+      break;
+    }
+  }
+
   const detailFields = suggestFields(page);
   const nextPage = autoDetectNextPage(page);
 

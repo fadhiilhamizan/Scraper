@@ -4,6 +4,17 @@ A professional, modular web scraping framework. Describe what you want in a
 YAML file; it handles requests, JavaScript rendering, anti-blocking, cleaning,
 validation, de-duplication and output — and tells you when a site changes.
 
+**Point-and-click, in your browser:**
+
+```bash
+harvest ui
+```
+
+Paste a URL, and it finds the selectors, writes the recipe, tests it, and shows
+the data arriving live. [→ Web interface](docs/13-web-interface.md)
+
+**Or from the terminal:**
+
 ```bash
 harvest inspect https://books.toscrape.com --generate books.yaml   # find the selectors
 harvest test books.yaml                                            # check them
@@ -14,10 +25,10 @@ harvest run books.yaml -o books.csv                                # run it
 
 ## Why this one
 
-**It finds the selectors for you.** `harvest inspect` analyses a page and
-reports which repeated blocks look like records, what structured data is
-published, whether JavaScript is required, and how pagination works — then
-writes a working recipe.
+**It finds the selectors for you.** Give it a URL and it analyses the page —
+which repeated blocks look like records, what structured data is published,
+whether JavaScript is required, how pagination works — then writes a working
+recipe. In the browser or with `harvest inspect`.
 
 **It tells you when it breaks.** Every run reports per-field fill rates. A
 selector that stopped matching shows up as `price: 0% filled` and a non-zero
@@ -210,6 +221,7 @@ if (report.fieldHealth.some((f) => f.status === 'broken')) {
 
 | Command | Purpose |
 |---|---|
+| `harvest ui` | Open the visual interface in your browser |
 | `harvest run <recipe>` | Run a scrape |
 | `harvest inspect <url>` | Analyse a page, suggest selectors, generate a recipe |
 | `harvest test <recipe>` | Dry-run extraction on one page, with coverage bars |
@@ -227,6 +239,7 @@ if (report.fieldHealth.some((f) => f.status === 'broken')) {
 | | |
 |---|---|
 | [Getting started](docs/01-getting-started.md) | Zero to a working scraper |
+| [Web interface](docs/13-web-interface.md) | The browser UI, end to end |
 | [Writing recipes](docs/02-recipes.md) | Every option, with examples |
 | [CLI reference](docs/03-cli.md) | Commands, flags, exit codes |
 | [Selectors and fields](docs/04-selectors.md) | CSS, XPath, structured data, transforms |

@@ -6,6 +6,7 @@ harvest <command> [options]
 
 | Command | Purpose |
 |---|---|
+| [`ui`](#harvest-ui) | Open the visual interface in a browser |
 | [`run`](#harvest-run) | Run a scrape from a recipe |
 | [`init`](#harvest-init) | Create a recipe from a template |
 | [`inspect`](#harvest-inspect) | Analyse a page and suggest selectors |
@@ -17,6 +18,34 @@ harvest <command> [options]
 | [`cache`](#harvest-cache) | Manage the response cache |
 
 Global: `--help`, `--version`, `--verbose`, `--quiet`, `--json`.
+
+---
+
+## `harvest ui`
+
+```bash
+harvest ui [options]
+```
+
+Starts a local web server and opens it in your browser. Everything below is
+available there too: inspecting pages, editing recipes with live validation,
+testing selectors, and watching runs stream in.
+
+| Option | Description |
+|---|---|
+| `--port <n>` | Port to listen on (default 4180) |
+| `--host <addr>` | Interface to bind (default 127.0.0.1) |
+| `--dir <path>` | Folder holding your recipes (default: current directory) |
+| `--no-open` | Don't launch a browser |
+
+Binds to localhost only, and every request must carry a session token generated
+at startup and embedded in the page. Full detail: [Web
+interface](13-web-interface.md).
+
+```bash
+harvest ui
+harvest ui --dir ./recipes --port 8080
+```
 
 ---
 

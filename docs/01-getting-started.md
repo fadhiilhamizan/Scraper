@@ -38,6 +38,28 @@ skipped that step.
 
 ---
 
+## The quickest route: the web interface
+
+If you'd rather click than type:
+
+```bash
+harvest ui
+```
+
+Your browser opens on a page with a URL box. Paste a site, press **Analyze**,
+and Harvester tells you what's on the page and writes a recipe. From there you
+can edit it with live validation, test the selectors against one page, and watch
+the run happen — records appearing in a table as they're extracted.
+
+Recipes it creates are ordinary files, so anything you build visually can be run
+from the terminal or a cron job later. Full tour: [Web
+interface](13-web-interface.md).
+
+The rest of this guide covers the command line, which does exactly the same
+things.
+
+---
+
 ## The three-command workflow
 
 Writing a scraper normally means an hour in browser dev tools guessing at CSS

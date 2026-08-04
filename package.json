@@ -19,7 +19,8 @@
     "test": "node --test \"test/*.test.js\"",
     "test:watch": "node --test --watch \"test/*.test.js\"",
     "lint": "node --check src/index.js",
-    "harvest": "node ./bin/harvest.js"
+    "harvest": "node ./bin/harvest.js",
+    "ui": "node ./bin/harvest.js ui"
   },
   "keywords": [
     "scraper",
@@ -46,6 +47,7 @@
     "bin",
     "recipes",
     "docs",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ]
 }

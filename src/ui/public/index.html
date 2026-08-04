@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harvester</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌾</text></svg>">
+</head>
+<body>
+<script nonce="__HARVEST_NONCE__">window.HARVEST_TOKEN = "__HARVEST_TOKEN__";</script>
+
+<div class="app">
+
+  <!-- ─────────────────────────── sidebar ─────────────────────────── -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">🌾</span>
+      <div>
+        <div class="brand-name">Harvester</div>
+        <div class="brand-sub" id="brand-version">web scraper</div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <button class="nav-item" data-view="inspect">
+        <span class="nav-icon">🔍</span> Inspect a page
+      </button>
+      <button class="nav-item" data-view="runs">
+        <span class="nav-icon">📊</span> Runs
+        <span class="badge" id="runs-badge" hidden>0</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-section">
+      <div class="sidebar-heading">
+        <span>Recipes</span>
+        <button class="icon-btn" id="new-recipe-btn" title="New recipe">+</button>
+      </div>
+      <div class="recipe-list" id="recipe-list">
+        <div class="empty-hint">Loading…</div>
+      </div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="theme-toggle" id="theme-toggle" title="Toggle theme">◐</button>
+      <div class="footer-info">
+        <div class="footer-line" id="workspace-path" title=""></div>
+        <div class="footer-line" id="engine-status"></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ──────────────────────────── main ───────────────────────────── -->
+  <main class="main">
+
+    <!-- ============================ INSPECT ============================ -->
+    <section class="view" id="view-inspect">
+      <header class="view-header">
+        <div>
+          <h1>Inspect a page</h1>
+          <p class="subtitle">Paste a URL. Harvester works out what's on the page and writes the recipe for you.</p>
+        </div>
+      </header>
+
+      <form class="url-bar" id="inspect-form">
+        <input type="url" id="inspect-url" placeholder="https://books.toscrape.com" required
+               autocomplete="off" spellcheck="false">
+        <label class="checkbox" title="Run the page in a real browser first">
+          <input type="checkbox" id="inspect-render"> Render JS
+        </label>
+        <button type="submit" class="btn btn-primary" id="inspect-btn">Analyze</button>
+      </form>
+
+      <div class="hint-row" id="inspect-examples">
+        Try:
+        <button class="link-btn" data-url="https://books.toscrape.com">books.toscrape.com</button>
+        <button class="link-btn" data-url="https://quotes.toscrape.com">quotes.toscrape.com</button>
+      </div>
+
+      <div id="inspect-results" hidden></div>
+    </section>
+
+    <!-- ============================ EDITOR ============================ -->
+    <section class="view" id="view-editor">
+      <header class="view-header editor-header">
+        <div class="editor-title">
+          <h1 id="editor-name">recipe.yaml</h1>
+          <span class="pill" id="editor-status">unsaved</span>
+        </div>
+        <div class="toolbar">
+          <button class="btn" id="btn-save" title="Ctrl+S">Save</button>
+          <button class="btn" id="btn-test" title="Fetch one page and show what would be extracted">Test</button>
+          <button class="btn btn-primary" id="btn-run" title="Ctrl+Enter">Run</button>
+          <button class="btn btn-ghost" id="btn-delete" title="Delete this recipe">Delete</button>
+        </div>
+      </header>
+
+      <div class="editor-layout">
+        <div class="editor-pane">
+          <div class="editor-wrap">
+            <div class="gutter" id="editor-gutter"></div>
+            <textarea id="editor" spellcheck="false" autocomplete="off"
+                      autocapitalize="off" wrap="off"></textarea>
+          </div>
+        </div>
+
+        <aside class="editor-side">
+          <div class="panel" id="validation-panel">
+            <div class="panel-head">Validation</div>
+            <div class="panel-body" id="validation-body">
+              <div class="empty-hint">Checking…</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">Run options</div>
+            <div class="panel-body run-options">
+              <label class="field">
+                <span>Page limit</span>
+                <input type="number" id="opt-limit" min="1" placeholder="all">
+              </label>
+              <label class="field">
+                <span>Requests / sec</span>
+                <input type="number" id="opt-rps" min="0.1" step="0.1" placeholder="recipe">
+              </label>
+              <label class="field">
+                <span>Concurrency</span>
+                <input type="number" id="opt-concurrency" min="1" placeholder="recipe">
+              </label>
+              <label class="field">
+                <span>Preset</span>
+                <select id="opt-preset"><option value="">none</option></select>
+              </label>
+              <label class="field">
+                <span>Rendering</span>
+                <select id="opt-render">
+                  <option value="">from recipe</option>
+                  <option value="never">never</option>
+                  <option value="auto">auto</option>
+                  <option value="always">always</option>
+                </select>
+              </label>
+              <label class="checkbox"><input type="checkbox" id="opt-cache"> Cache responses</label>
+              <label class="checkbox"><input type="checkbox" id="opt-resume"> Resume / checkpoint</label>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+      <div class="test-panel" id="test-panel" hidden>
+        <div class="panel-head">
+          <span>Test result</span>
+          <button class="icon-btn" id="close-test" title="Close">×</button>
+        </div>
+        <div class="panel-body" id="test-body"></div>
+      </div>
+    </section>
+
+    <!-- ============================= RUNS ============================= -->
+    <section class="view" id="view-runs">
+      <header class="view-header">
+        <div>
+          <h1>Runs</h1>
+          <p class="subtitle">Every scrape you've started, with its results.</p>
+        </div>
+      </header>
+      <div id="runs-list"></div>
+    </section>
+
+    <!-- ============================== RUN ============================= -->
+    <section class="view" id="view-run">
+      <header class="view-header run-header">
+        <div>
+          <h1 id="run-title">Run</h1>
+          <p class="subtitle" id="run-subtitle"></p>
+        </div>
+        <div class="toolbar">
+          <button class="btn btn-danger" id="btn-stop" hidden>Stop</button>
+          <div class="dropdown">
+            <button class="btn" id="btn-download">Download ▾</button>
+            <div class="dropdown-menu" id="download-menu">
+              <button data-format="csv">CSV</button>
+              <button data-format="json">JSON</button>
+              <button data-format="ndjson">NDJSON</button>
+              <button data-format="xlsx">Excel</button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <div class="stat-grid" id="run-stats"></div>
+      <div class="progress" id="run-progress" hidden><div class="progress-bar" id="run-progress-bar"></div></div>
+
+      <div class="tabs" id="run-tabs">
+        <button class="tab active" data-tab="data">Data <span class="tab-count" id="tab-count-data">0</span></button>
+        <button class="tab" data-tab="log">Log</button>
+        <button class="tab" data-tab="report">Report</button>
+      </div>
+
+      <div class="tab-panel active" id="tab-data"><div class="table-scroll" id="run-table"></div></div>
+      <div class="tab-panel" id="tab-log"><div class="log" id="run-log"></div></div>
+      <div class="tab-panel" id="tab-report"><div id="run-report"></div></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ─────────────────────────── modal ─────────────────────────── -->
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal">
+    <div class="modal-head" id="modal-title">New recipe</div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn btn-primary" id="modal-ok">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

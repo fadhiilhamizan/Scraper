@@ -51,6 +51,8 @@ const FLAG_SPEC = {
     label: 'string', save: 'string', screenshot: 'string', full: 'boolean',
     // init
     template: 'string', force: 'boolean',
+    // ui
+    port: 'number', host: 'string', dir: 'string', open: 'boolean',
   },
   aliases: {
     h: 'help', v: 'verbose', V: 'version', q: 'quiet', o: 'output', f: 'format',
@@ -70,6 +72,7 @@ ${C.b}USAGE${C.x}
 
 ${C.b}COMMANDS${C.x}
 ${formatOptions([
+    ['ui', 'Open the visual interface in your browser'],
     ['run <recipe>', 'Run a scrape from a recipe file'],
     ['init [name]', 'Create a new recipe from a template'],
     ['inspect <url>', 'Analyse a page and suggest selectors'],
@@ -82,7 +85,10 @@ ${formatOptions([
   ])}
 
 ${C.b}GETTING STARTED${C.x}
-  ${C.d}# 1. Look at the page and let harvest propose a recipe${C.x}
+  ${C.d}# Prefer a visual interface? This is the whole tool in a browser.${C.x}
+  harvest ui
+
+  ${C.d}# Or from the terminal — 1. let harvest propose a recipe${C.x}
   harvest inspect https://books.toscrape.com --generate books.yaml
 
   ${C.d}# 2. Try it against a single page${C.x}
@@ -96,6 +102,31 @@ Full documentation is in ./docs/.`;
 }
 
 const COMMAND_HELP = {
+  ui: `${C.b}harvest ui${C.x} — the visual interface
+
+Starts a small local web server and opens it in your browser. Everything the
+CLI does is available there: inspecting pages, editing recipes with live
+validation, testing selectors, and watching runs live.
+
+${C.b}OPTIONS${C.x}
+${formatOptions([
+    ['    --port <n>', 'Port to listen on (default 4180)'],
+    ['    --host <addr>', 'Interface to bind (default 127.0.0.1)'],
+    ['    --dir <path>', 'Folder holding your recipes (default: the current one)'],
+    ['    --no-open', "Don't launch a browser automatically"],
+  ])}
+
+${C.b}SECURITY${C.x}
+  Binds to localhost only, and every request must carry a session token that is
+  generated at startup and embedded in the page. That token is what prevents
+  another site you have open from driving your scraper. Do not expose this
+  server to a network you don't control.
+
+${C.b}EXAMPLES${C.x}
+  harvest ui
+  harvest ui --dir ./recipes --port 8080
+  harvest ui --no-open`,
+
   run: `${C.b}harvest run <recipe>${C.x} — run a scrape
 
 ${C.b}OPTIONS${C.x}
@@ -581,6 +612,62 @@ async function cmdTransforms(positional, flags) {
   return 0;
 }
 
+async function cmdUi(positional, flags) {
+  const { createServer, openBrowser } = await import('../ui/server.js');
+
+  const workspace = path.resolve(flags.dir ?? positional[0] ?? process.cwd());
+  let instance;
+  try {
+    instance = await createServer({
+      port: flags.port ?? 4180,
+      host: flags.host ?? '127.0.0.1',
+      workspace,
+      version: VERSION,
+    });
+  } catch (error) {
+    if (error.code === 'EADDRINUSE') {
+      throw new ConfigError(
+        `Port ${flags.port ?? 4180} is already in use.\n` +
+        '  Pass a different one with --port, or stop whatever is using it.',
+      );
+    }
+    throw error;
+  }
+
+  const bound = flags.host && flags.host !== '127.0.0.1' && flags.host !== 'localhost';
+
+  process.stdout.write(
+    `\n  ${C.b}Harvester${C.x} ${C.d}v${VERSION}${C.x}\n\n` +
+    `  ${C.g}▸${C.x} ${C.c}${instance.url}${C.x}\n\n` +
+    `  ${C.d}Recipes${C.x}  ${workspace}\n` +
+    `  ${C.d}Stop${C.x}     Ctrl+C\n\n` +
+    (bound
+      ? `  ${C.y}!${C.x} Bound to ${flags.host}, not just localhost. Anyone who can reach\n` +
+        `    this address and has the token above can run scrapes from your machine.\n\n`
+      : ''),
+  );
+
+  if (flags.open !== false) {
+    await openBrowser(instance.url);
+  }
+
+  // Keep the process alive until interrupted.
+  await new Promise((resolve) => {
+    let closing = false;
+    const shutdown = async () => {
+      if (closing) return;
+      closing = true;
+      process.stdout.write(`\n  ${C.d}Shutting down…${C.x}\n`);
+      await instance.close();
+      resolve();
+    };
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
+  });
+
+  return 0;
+}
+
 async function cmdCache(positional) {
   const action = positional[0];
   const cache = new HttpCache({ enabled: true });
@@ -787,6 +874,7 @@ function installSignalHandlers(scraper, logger) {
 }
 
 const COMMANDS = {
+  ui: cmdUi,
   run: cmdRun,
   init: cmdInit,
   inspect: cmdInspect,
