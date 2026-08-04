@@ -4,6 +4,56 @@ Symptoms, causes, fixes.
 
 ---
 
+## `harvest` is not recognized as a command
+
+```
+harvest : The term 'harvest' is not recognized as the name of a cmdlet…
+bash: harvest: command not found
+```
+
+The command hasn't been registered on your PATH. From the project folder:
+
+```bash
+npm install
+npm link
+```
+
+Then check:
+
+```bash
+harvest --version
+```
+
+**Still not found after linking?** Open a *new* terminal. A shell reads its PATH
+when it starts, so a window you had open before linking won't see the new
+command.
+
+**Don't want to link?** Run it by path instead — this always works:
+
+```bash
+node bin/harvest.js ui
+node bin/harvest.js run recipe.yaml -o data.csv
+```
+
+Or via npm scripts (note the `--` before arguments):
+
+```bash
+npm run ui
+npm run harvest -- run recipe.yaml -o data.csv
+```
+
+**`npm link` fails with a permissions error?** On Linux and macOS the global
+npm prefix may need elevation. Rather than `sudo`, point npm at a folder you
+own:
+
+```bash
+npm config set prefix ~/.npm-global
+export PATH="$HOME/.npm-global/bin:$PATH"   # add this to your shell profile
+npm link
+```
+
+---
+
 ## Nothing was extracted
 
 `Pages 20 ok, Items 0 written` and exit code `2`.

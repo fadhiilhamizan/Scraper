@@ -36,6 +36,25 @@ const RECIPE_EXT = /\.(ya?ml|json|m?js)$/i;
 /** Recipe names are file names — no separators, no traversal. */
 const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
 
+/**
+ * Files that share a recipe extension but obviously aren't recipes.
+ *
+ * Running the interface from a project folder would otherwise list
+ * `package.json` as a broken recipe, which is a baffling first impression.
+ */
+const NOT_RECIPES = new Set([
+  'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock',
+  'tsconfig.json', 'jsconfig.json', 'deno.json', 'composer.json', 'bower.json',
+  'manifest.json', 'lerna.json', 'nodemon.json', 'now.json', 'vercel.json',
+  'renovate.json', 'turbo.json', 'biome.json',
+]);
+
+/** `*.config.js`, `.eslintrc.json`, and friends. */
+const CONFIG_FILE = /(^\.|\.config\.(c|m)?js$|^eslint\.|^vite\.|^webpack\.|^rollup\.|^babel\.|^jest\.)/i;
+
+const looksLikeRecipe = (name) =>
+  RECIPE_EXT.test(name) && !NOT_RECIPES.has(name.toLowerCase()) && !CONFIG_FILE.test(name);
+
 function assertSafeName(name) {
   if (!name || !SAFE_NAME.test(name) || name.startsWith('.')) {
     throw new ApiError(`Invalid recipe name '${name}'. Use letters, digits, dots, dashes and underscores.`);
@@ -104,8 +123,7 @@ export function createApi({ workspace, jobs, version }) {
 
       const out = [];
       for (const entry of entries) {
-        if (!entry.isFile() || !RECIPE_EXT.test(entry.name)) continue;
-        if (entry.name.startsWith('.')) continue;
+        if (!entry.isFile() || !looksLikeRecipe(entry.name)) continue;
         const full = path.join(workspace, entry.name);
         const stat = await fs.stat(full).catch(() => null);
 

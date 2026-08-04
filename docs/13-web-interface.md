@@ -4,6 +4,7 @@ Everything the CLI does, in a browser — with live progress, inline validation
 and results you can click through.
 
 ```bash
+npm install && npm link     # once — this is what puts `harvest` on your PATH
 harvest ui
 ```
 
@@ -12,12 +13,16 @@ harvest ui
 
   ▸ http://127.0.0.1:4180/?token=j6Yt_E0cvt_uQ1i89rKYAkQ4rEi8yDAa
 
-  Recipes  C:\Users\you\scrapers
+  Recipes  C:\Users\you\scrapers\recipes  (change with --dir)
   Stop     Ctrl+C
 ```
 
 Your browser opens automatically. If it doesn't, copy that URL — the token in it
 is required.
+
+Haven't linked the command? `npm run ui` does the same thing, or
+`node bin/harvest.js ui`. If you get *"harvest is not recognized"*, see
+[Troubleshooting](10-troubleshooting.md#harvest-is-not-recognized-as-a-command).
 
 ---
 
@@ -99,12 +104,17 @@ site will barely notice you.
 
 ## Recipes and the workspace
 
-The sidebar lists every recipe in your workspace folder — by default whichever
-directory you ran `harvest ui` from:
+The sidebar lists every recipe in your workspace folder. By default that's a
+`recipes/` subfolder if one exists, otherwise the directory you ran the command
+from. The path is printed at startup and shown in the sidebar footer.
 
 ```bash
-harvest ui --dir ./recipes
+harvest ui --dir ./my-scrapers
 ```
+
+Only recipe-shaped files are listed — `package.json`, lockfiles and
+`*.config.js` are ignored, so running the interface from a project root doesn't
+fill the sidebar with things that aren't recipes.
 
 Recipes here are ordinary files. The CLI, the UI and your editor all read the
 same ones, so nothing is locked into the interface:
@@ -150,7 +160,7 @@ records as NDJSON plus the report. The 50 most recent are kept.
 |---|---|---|
 | `--port <n>` | `4180` | Port to listen on |
 | `--host <addr>` | `127.0.0.1` | Interface to bind |
-| `--dir <path>` | current directory | Folder holding your recipes |
+| `--dir <path>` | `./recipes` if it exists, else the current directory | Folder holding your recipes |
 | `--no-open` | | Don't launch a browser |
 
 ---
@@ -201,6 +211,10 @@ nothing.
 ---
 
 ## Troubleshooting
+
+**"harvest is not recognized"** — the command isn't on your PATH. Run
+`npm install && npm link` in the project folder, then open a *new* terminal. Or
+skip linking and use `npm run ui`.
 
 **"Could not reach the Harvester server"** — the page was opened without the
 token, or the server was restarted (which issues a new one). Use the URL printed

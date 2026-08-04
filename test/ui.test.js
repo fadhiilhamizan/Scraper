@@ -178,6 +178,26 @@ test('a recipe can be created, listed, read and deleted', async () => {
   assert.equal(gone.status, 404);
 });
 
+test('project files that share a recipe extension are not listed as recipes', async () => {
+  // Running the interface from a project root should not present package.json
+  // as a broken recipe.
+  await fs.writeFile(path.join(workspace, 'package.json'), '{"name":"x"}', 'utf8');
+  await fs.writeFile(path.join(workspace, 'package-lock.json'), '{}', 'utf8');
+  await fs.writeFile(path.join(workspace, 'vite.config.js'), 'export default {}', 'utf8');
+  await fs.writeFile(path.join(workspace, '.eslintrc.json'), '{}', 'utf8');
+  await fs.writeFile(path.join(workspace, 'real.yaml'), RECIPE(base), 'utf8');
+
+  const { body } = await call('GET', '/api/recipes');
+  const names = body.map((r) => r.name);
+
+  assert.ok(names.includes('real.yaml'));
+  for (const noise of ['package.json', 'package-lock.json', 'vite.config.js', '.eslintrc.json']) {
+    assert.ok(!names.includes(noise), `${noise} should not be listed`);
+  }
+
+  await fs.unlink(path.join(workspace, 'real.yaml'));
+});
+
 test('recipe names cannot escape the workspace', async () => {
   for (const name of ['../escape.yaml', '..%2Fescape.yaml', 'sub/dir.yaml', '.hidden.yaml']) {
     const { status } = await call('PUT', `/api/recipes/${encodeURIComponent(name)}`, { text: 'x' });

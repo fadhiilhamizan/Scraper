@@ -8,33 +8,55 @@ This guide takes you from zero to a working scraper in about five minutes.
 
 ```bash
 npm install
+npm link
 ```
 
-That's the whole framework. Optionally, for JavaScript-heavy sites:
+`npm install` fetches the framework's three dependencies. `npm link` registers
+the `harvest` command so you can run it from anywhere — **skip it and you'll get
+`harvest : The term 'harvest' is not recognized`**, because the command simply
+isn't on your PATH yet.
+
+Check it worked:
+
+```bash
+harvest --version
+```
+
+> **Already open a terminal before linking?** Open a new one. A shell reads its
+> PATH when it starts, so an existing window may not see a newly-registered
+> command.
+
+### If you'd rather not link
+
+Everything works without it — run the CLI by path from the project folder:
+
+```bash
+node bin/harvest.js --version
+node bin/harvest.js ui
+```
+
+Or use the npm scripts:
+
+```bash
+npm run ui                       # the web interface
+npm run harvest -- run r.yaml    # note the `--` before the arguments
+```
+
+The rest of these docs write `harvest`; substitute `node bin/harvest.js` if you
+skipped linking.
+
+### Optional: dynamic rendering
+
+For JavaScript-heavy sites:
 
 ```bash
 npm install playwright && npx playwright install chromium
 ```
 
-Everything except dynamic rendering works without it.
+Everything except rendering works without it.
 
-**Requirements:** Node 20 or newer. (Node 22.5+ additionally enables the built-in
-SQLite output.)
-
-Check it works:
-
-```bash
-node bin/harvest.js --version
-```
-
-To type `harvest` instead of `node bin/harvest.js`, link it once:
-
-```bash
-npm link
-```
-
-The rest of these docs write `harvest`; substitute `node bin/harvest.js` if you
-skipped that step.
+**Requirements:** Node 20 or newer. (Node 22.5+ additionally enables the
+built-in SQLite output.)
 
 ---
 

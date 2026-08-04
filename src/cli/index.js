@@ -612,10 +612,27 @@ async function cmdTransforms(positional, flags) {
   return 0;
 }
 
+/**
+ * Where the UI should look for recipes.
+ *
+ * Defaulting to a `recipes/` subfolder when one exists keeps the interface
+ * pointed at actual recipes instead of whatever else is lying around in a
+ * project root.
+ */
+async function resolveWorkspace(explicit) {
+  if (explicit) return path.resolve(explicit);
+
+  const candidate = path.resolve(process.cwd(), 'recipes');
+  try {
+    if ((await fs.stat(candidate)).isDirectory()) return candidate;
+  } catch { /* no recipes/ folder — use the current directory */ }
+  return process.cwd();
+}
+
 async function cmdUi(positional, flags) {
   const { createServer, openBrowser } = await import('../ui/server.js');
 
-  const workspace = path.resolve(flags.dir ?? positional[0] ?? process.cwd());
+  const workspace = await resolveWorkspace(flags.dir ?? positional[0]);
   let instance;
   try {
     instance = await createServer({
@@ -639,7 +656,7 @@ async function cmdUi(positional, flags) {
   process.stdout.write(
     `\n  ${C.b}Harvester${C.x} ${C.d}v${VERSION}${C.x}\n\n` +
     `  ${C.g}▸${C.x} ${C.c}${instance.url}${C.x}\n\n` +
-    `  ${C.d}Recipes${C.x}  ${workspace}\n` +
+    `  ${C.d}Recipes${C.x}  ${workspace}${flags.dir ? '' : `  ${C.d}(change with --dir)${C.x}`}\n` +
     `  ${C.d}Stop${C.x}     Ctrl+C\n\n` +
     (bound
       ? `  ${C.y}!${C.x} Bound to ${flags.host}, not just localhost. Anyone who can reach\n` +

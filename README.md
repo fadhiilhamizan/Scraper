@@ -7,6 +7,7 @@ validation, de-duplication and output — and tells you when a site changes.
 **Point-and-click, in your browser:**
 
 ```bash
+npm install && npm link
 harvest ui
 ```
 
@@ -48,8 +49,13 @@ tell you when to stop rather than how to push through.
 
 ```bash
 npm install
-npm link          # optional: puts `harvest` on your PATH
+npm link
 ```
+
+`npm link` is what puts the `harvest` command on your PATH — without it you'll
+get *"harvest is not recognized"*. If you'd rather not link, every example below
+works with `node bin/harvest.js` in place of `harvest`, or `npm run ui` for the
+interface.
 
 For JavaScript-heavy sites:
 
