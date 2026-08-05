@@ -51,11 +51,18 @@ import { createLogger, nullLogger } from '../observability/logger.js';
 import { Metrics } from '../observability/metrics.js';
 import { ProgressReporter } from '../observability/progress.js';
 
-import { sleep, Semaphore } from '../utils/async.js';
+import { sleep, deferred } from '../utils/async.js';
 import {
   BlockedError, DisallowedError, CircuitOpenError, HttpError,
   toHarvesterError,
 } from '../utils/errors.js';
+
+/**
+ * How long an idle worker parks when no host has capacity. Only another worker
+ * finishing can help, and that fires a wake — so this is purely a safety net
+ * against a missed signal, not a poll interval.
+ */
+const IDLE_SAFETY_MS = 1000;
 
 export class Scraper extends EventEmitter {
   /**
@@ -164,7 +171,6 @@ export class Scraper extends EventEmitter {
 
     this.runState = new RunState({ ...c.resume, logger: this.logger });
 
-    this.globalSemaphore = new Semaphore(c.concurrency);
     /** @type {Map<string, number>} host -> in-flight count */
     this.hostActive = new Map();
 
@@ -185,6 +191,9 @@ export class Scraper extends EventEmitter {
     /** Counters carried over from an earlier, resumed session. */
     this.resumedFrom = null;
   }
+
+  /** Workers parked waiting for work. @type {Set<{promise:Promise, resolve:Function}>} */
+  #idleWaiters = new Set();
 
   /* ────────────────────────────── public API ───────────────────────────── */
 
@@ -233,6 +242,8 @@ export class Scraper extends EventEmitter {
     this.stopReason = reason;
     this.logger.warn('stopping', { reason });
     this.emit('stopping', reason);
+    // Parked workers must re-check `#shouldStop()` now, not after their timeout.
+    this.#wake();
   }
 
   /** Stop now, aborting in-flight requests too. */
@@ -265,6 +276,10 @@ export class Scraper extends EventEmitter {
     if (this.config.dedupe.persistPath) {
       const loaded = await this.dedupe.load();
       if (loaded) this.logger.info('loaded previously seen records', { count: loaded });
+      if (this.dedupe.incompatibleStore) {
+        this.logger.warn(this.dedupe.incompatibleStore.message);
+        this.warnings.push(this.dedupe.incompatibleStore.message);
+      }
     }
 
     await this.sink.open();
@@ -367,11 +382,10 @@ export class Scraper extends EventEmitter {
         // Nothing available right now. If the frontier is genuinely empty and
         // no peer is working, there is nothing left to produce more work.
         if (this.frontier.drained) break;
-        await sleep(50, this.abortController.signal).catch(() => {});
+        await this.#parkUntilWork();
         continue;
       }
 
-      const release = await this.globalSemaphore.acquire();
       try {
         await this.#process(request, log);
       } catch (error) {
@@ -379,10 +393,55 @@ export class Scraper extends EventEmitter {
         log.error('unhandled worker error', { url: request.url, error: error.message, stack: error.stack });
         this.frontier.markFailed(request, error);
       } finally {
-        release();
         this.#releaseHost(request.url);
+        // A slot just freed up — a peer may be parked waiting for exactly this.
+        this.#wake();
       }
     }
+  }
+
+  /**
+   * Sleep until there is plausibly work to do.
+   *
+   * This used to be a flat 50 ms poll, which meant that on a single-host crawl
+   * every worker beyond `concurrency_per_host` spun at 20 Hz for the entire run
+   * doing nothing. Parking on a promise costs nothing and makes idle time
+   * measurable instead of an artefact of the poll interval.
+   *
+   * The wait is chosen by *why* there is no work. If some host has capacity and
+   * is merely rate-limited, sleep exactly until it is ready. If no host has
+   * capacity, only another worker finishing can help — park on the wake signal,
+   * with a timeout as a safety net so a missed wake degrades to a slow poll
+   * rather than a hang.
+   */
+  async #parkUntilWork() {
+    const canTake = (host) => this.circuitBreaker.canRequest(host)
+      && (this.hostActive.get(host) ?? 0) < this.config.concurrencyPerHost;
+
+    const withCapacity = this.frontier.pendingHosts.filter(canTake);
+    const waitMs = withCapacity.length
+      ? Math.max(1, this.rateLimiter.minDelayAcrossHosts(withCapacity))
+      : IDLE_SAFETY_MS;
+
+    const started = performance.now();
+    const waiter = deferred();
+    this.#idleWaiters.add(waiter);
+    const timer = setTimeout(() => waiter.resolve(), waitMs);
+
+    try {
+      await waiter.promise;
+    } finally {
+      clearTimeout(timer);
+      this.#idleWaiters.delete(waiter);
+      this.metrics.observe('worker_idle_ms', performance.now() - started);
+    }
+  }
+
+  /** Release every parked worker — new work arrived, or a slot freed up. */
+  #wake() {
+    if (this.#idleWaiters.size === 0) return;
+    for (const waiter of this.#idleWaiters) waiter.resolve();
+    this.#idleWaiters.clear();
   }
 
   #shouldStop() {
@@ -450,8 +509,10 @@ export class Scraper extends EventEmitter {
 
       // 2. robots.txt — before any bytes are requested.
       if (this.config.robots.enabled) {
-        const verdict = await this.robots.check(request.url);
-        if (verdict.crawlDelay != null) this.rateLimiter.setCrawlDelay(host, verdict.crawlDelay);
+        const verdict = await this.metrics.time('robots_ms', () => this.robots.check(request.url));
+        if (verdict.crawlDelay != null && !this.config.robots.ignoreCrawlDelay) {
+          this.rateLimiter.setCrawlDelay(host, verdict.crawlDelay);
+        }
         if (!verdict.allowed) {
           this.counters.robotsBlocked += 1;
           this.counters.pagesSkipped += 1;
@@ -463,8 +524,13 @@ export class Scraper extends EventEmitter {
         }
       }
 
-      // 3. Politeness delay.
-      await this.rateLimiter.acquire(host, this.abortController.signal);
+      // 3. Politeness delay. Timed separately from everything else — on a
+      // polite run this is the overwhelming majority of wall time, and saying
+      // so plainly is the whole point of the timing report.
+      await this.metrics.time(
+        'wait_ratelimit_ms',
+        () => this.rateLimiter.acquire(host, this.abortController.signal),
+      );
 
       // 4. Fetch, with retries and identity rotation.
       const response = await this.#fetchWithRetry(request, log);
@@ -474,9 +540,18 @@ export class Scraper extends EventEmitter {
       this.metrics.recordHost(host, 'bytes', response.bytes ?? 0);
       this.metrics.recordHost(host, 'totalMs', response.durationMs ?? 0);
       this.metrics.observe('request_duration_ms', response.durationMs ?? 0);
+      // Cache hits report durationMs 0; keeping them out of `net_ms` stops a
+      // cached run from looking like an impossibly fast network.
+      if (!response.fromCache) {
+        this.metrics.observe('net_ms', response.durationMs ?? 0);
+        if (response.rendered) this.metrics.observe('render_ms', response.durationMs ?? 0);
+      }
 
       if (response.fromCache) this.counters.pagesFromCache += 1;
-      if (response.rendered) this.counters.pagesRendered += 1;
+      // "Rendered" counts browsers actually launched. A cached body that a
+      // browser produced earlier costs nothing now, and counting it would make
+      // a fully-cached run look as expensive as the one that populated it.
+      if (response.rendered && !response.fromCache) this.counters.pagesRendered += 1;
 
       // 5. Parse and extract.
       await this.#handleResponse(request, response, log);
@@ -530,7 +605,9 @@ export class Scraper extends EventEmitter {
         this.warnings.push(error.message);
       }
     } finally {
-      this.progress.update(this.#progressSnapshot());
+      // Gated: without this the snapshot was computed on every page even under
+      // `--json` and in CI, where the progress renderer discards it.
+      if (this.progress.enabled) this.progress.update(this.#progressSnapshot());
       this.metrics.observe('page_total_ms', performance.now() - started);
     }
   }
@@ -586,9 +663,14 @@ export class Scraper extends EventEmitter {
           adjustments: Object.keys(adjust).join(',') || 'none',
         });
 
-        await sleep(decision.delayMs, this.abortController.signal);
-        // Re-acquire the politeness token — the retry is a fresh request.
-        await this.rateLimiter.acquire(host, this.abortController.signal);
+        // A retry costs its backoff *plus* a fresh politeness interval. Timed
+        // together so a flaky host shows up as retry cost rather than being
+        // mistaken for the site simply being slow.
+        await this.metrics.time('wait_retry_ms', async () => {
+          await sleep(decision.delayMs, this.abortController.signal);
+          // Re-acquire the politeness token — the retry is a fresh request.
+          await this.rateLimiter.acquire(host, this.abortController.signal);
+        });
       }
     }
   }
@@ -602,19 +684,44 @@ export class Scraper extends EventEmitter {
     const profile = this.uaRotator.next(host);
     const proxy = this.proxyPool.acquire(host);
 
-    if (shouldRenderUpFront && this.renderer) {
-      return this.#renderPage(request, { profile, proxy, host });
+    // Cache lookup comes first, before the render branch. A cached body is a
+    // cached body however it was obtained — checking it after the render branch
+    // meant `render.mode: always` silently never used the cache at all.
+    const cacheKey = { url: request.url, method: request.method, body: request.body };
+    const wantsRenderedBody = shouldRenderUpFront || mode === 'auto';
+
+    if (this.cache.enabled && request.method === 'GET') {
+      const cached = await this.metrics.time('cache_lookup_ms', () => this.cache.get(cacheKey));
+      // A body captured without a browser can't satisfy a run that needs one:
+      // serving it would hand back the un-rendered shell and extract nothing.
+      const usable = cached && (!wantsRenderedBody || cached.rendered === true);
+
+      if (usable) {
+        log.debug('cache hit', {
+          url: shortenUrl(request.url), ageMs: cached.ageMs, rendered: cached.rendered === true,
+        });
+        this.metrics.increment('cache_hits');
+        return {
+          ...cached,
+          buffer: Buffer.from(cached.body ?? ''),
+          bytes: (cached.body ?? '').length,
+          durationMs: 0,
+          rendered: cached.rendered === true,
+        };
+      }
+      if (cached) {
+        log.debug('cache entry ignored — it was captured without rendering', {
+          url: shortenUrl(request.url),
+        });
+      }
     }
 
-    // Cache lookup — only for idempotent requests.
-    const cacheKey = { url: request.url, method: request.method, body: request.body };
-    if (this.cache.enabled && request.method === 'GET') {
-      const cached = await this.cache.get(cacheKey);
-      if (cached) {
-        log.debug('cache hit', { url: shortenUrl(request.url), ageMs: cached.ageMs });
-        this.metrics.increment('cache_hits');
-        return { ...cached, buffer: Buffer.from(cached.body ?? ''), bytes: (cached.body ?? '').length, durationMs: 0 };
+    if (shouldRenderUpFront && this.renderer) {
+      const rendered = await this.#renderPage(request, { profile, proxy, host });
+      if (this.cache.enabled && request.method === 'GET') {
+        await this.cache.set(cacheKey, rendered);
       }
+      return rendered;
     }
 
     const headers = buildHeaders({
@@ -671,22 +778,33 @@ export class Scraper extends EventEmitter {
       );
     }
 
-    if (this.cache.enabled && request.method === 'GET') {
-      await this.cache.set(cacheKey, response);
-    }
-
     // `auto` mode: the HTTP response is in hand; decide whether it's enough.
+    // This runs BEFORE the cache write, so what lands on disk is the body we
+    // actually used. Caching the un-rendered shell here meant the next run got
+    // a cache hit, returned early, never escalated, and extracted nothing.
     if (mode === 'auto' && this.renderer) {
       const contentSelector = this.config.render.waitForSelector
         ?? this.config.extract?.item?.selector
         ?? this.config.extract?.selector
         ?? null;
 
+      // Parsed once and carried on the response, so `#handleResponse` reuses it
+      // instead of parsing the same HTML a second time.
+      let page = null;
       let contentFound;
       if (contentSelector) {
         try {
-          contentFound = new Page({ html: response.body, url: response.url }).exists(contentSelector);
+          page = this.metrics.timeSync('parse_html_ms', () => new Page({
+            html: response.body,
+            url: response.url ?? request.url,
+            status: response.status,
+            headers: response.headers,
+            response,
+            meta: request.meta,
+          }));
+          contentFound = page.exists(contentSelector);
         } catch {
+          page = null;
           contentFound = false;
         }
       }
@@ -695,8 +813,17 @@ export class Scraper extends EventEmitter {
       if (verdict.needed) {
         log.debug('escalating to a browser', { url: shortenUrl(request.url), reason: verdict.reason });
         this.metrics.increment('render_escalations', 1, { reason: verdict.reason });
-        return this.#renderPage(request, { profile, proxy, host });
+        const rendered = await this.#renderPage(request, { profile, proxy, host });
+        if (this.cache.enabled && request.method === 'GET') {
+          await this.cache.set(cacheKey, rendered);
+        }
+        return rendered;
       }
+      if (page) response.page = page;
+    }
+
+    if (this.cache.enabled && request.method === 'GET') {
+      await this.cache.set(cacheKey, response);
     }
 
     this.rateLimiter.report(host, { status: response.status });
@@ -768,22 +895,33 @@ export class Scraper extends EventEmitter {
       return;
     }
 
-    const page = new Page({
+    // `auto` render mode already parsed this HTML to test whether the content
+    // was present; reuse that parse rather than doing it twice.
+    const page = response.page ?? this.metrics.timeSync('parse_html_ms', () => new Page({
       html: response.body,
       url: response.url ?? request.url,
       status: response.status,
       headers: response.headers,
       response,
       meta: request.meta,
-    });
+    }));
 
-    await this.pipeline.emit('onPage', page, { ...this.#context(), request, response });
+    if (this.pipeline.has('onPage')) {
+      await this.pipeline.emit('onPage', page, { ...this.#context(), request, response });
+      // A hook receives the live page and may rewrite the DOM. The page's
+      // readers are memoised, so anything cached before the hook ran could now
+      // be stale.
+      page.invalidate();
+    }
 
     // Extraction, scoped by label when the recipe routes pages.
     const extractSpec = this.#extractSpecFor(request.label);
     let items = [];
     if (extractSpec) {
-      const result = extractItems(extractSpec, page, { request, response });
+      const result = this.metrics.timeSync(
+        'extract_ms',
+        () => extractItems(extractSpec, page, { request, response }),
+      );
       items = result.items;
       this.#recordFieldHealth(request.label, extractSpec, result);
 
@@ -799,7 +937,7 @@ export class Scraper extends EventEmitter {
 
     // Link discovery happens regardless of whether this page yielded items —
     // an intermediate listing page is often item-free by design.
-    await this.#discover(page, request, items.length, log);
+    await this.metrics.time('discover_ms', () => this.#discover(page, request, items.length, log));
 
     if (items.length === 0) return;
 
@@ -858,7 +996,7 @@ export class Scraper extends EventEmitter {
     }
 
     if (accepted.length) {
-      await this.sink.push(accepted);
+      await this.metrics.time('write_ms', () => this.sink.push(accepted));
       this.counters.itemsWritten += accepted.length;
       this.metrics.increment('items_written', accepted.length);
     }
@@ -910,6 +1048,9 @@ export class Scraper extends EventEmitter {
     if (added) {
       this.metrics.increment('links_queued', added);
       log.debug('queued links', { from: shortenUrl(page.url), found: gated.length, queued: added });
+      // New work exists — release any parked workers rather than making them
+      // wait out their timeout.
+      this.#wake();
     }
     for (const [reason, count] of Object.entries(skipped)) {
       this.metrics.increment('links_skipped', count, { reason });
@@ -1017,7 +1158,10 @@ export class Scraper extends EventEmitter {
       ...this.frontier.stats,
       items: this.counters.itemsWritten,
       failed: this.counters.pagesFailed,
-      rps: this.metrics.snapshot().rates.requestsPerSec,
+      // `metrics.requestsPerSec` is two divisions. The full `snapshot()` this
+      // used to call walks every histogram and sorts each reservoir three
+      // times — six sorts of 2000 numbers per page, to obtain one figure.
+      rps: this.metrics.requestsPerSec,
     };
   }
 

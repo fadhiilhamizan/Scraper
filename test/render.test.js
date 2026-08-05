@@ -193,6 +193,102 @@ test('actions drive the page, and optional actions tolerate absence', opts, asyn
   assert.equal(items[2].name, 'Lazy Gamma');
 });
 
+/* ────────────────────── cache + render interaction ─────────────────────── */
+
+test('auto + cache: a second run extracts the same items as the first', opts, async () => {
+  // The regression: the un-rendered shell was cached, so run 2 got a cache hit,
+  // returned early, never escalated to a browser, and extracted nothing.
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harvest-rendercache-'));
+
+  try {
+    const recipe = {
+      start_urls: [`${base}/`],
+      render: { mode: 'auto', wait_for_selector: '.item', wait_until: 'networkidle' },
+      cache: { enabled: true, dir },
+      extract: { item: { selector: '.item', fields: { name: '.item__name' } } },
+    };
+
+    const first = await run(recipe);
+    assert.equal(first.report.pages.rendered, 1, 'run 1 must need a browser');
+    assert.equal(first.items.length, 2);
+
+    const second = await run(recipe);
+    assert.deepEqual(
+      second.items.map((i) => i.name),
+      first.items.map((i) => i.name),
+      'a cached run must yield the same records, not the empty shell',
+    );
+    assert.equal(second.report.pages.fromCache, 1, 'and it should come from cache');
+    assert.equal(second.report.pages.rendered, 0, 'without launching a browser again');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('always + cache: the cache is actually used', opts, async () => {
+  // The cache lookup used to sit *after* the render branch, so `always` mode
+  // silently re-rendered every page on every run.
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harvest-rendercache2-'));
+
+  try {
+    const recipe = {
+      start_urls: [`${base}/`],
+      render: { mode: 'always', wait_for_selector: '.item', wait_until: 'networkidle' },
+      cache: { enabled: true, dir },
+      extract: { item: { selector: '.item', fields: { name: '.item__name' } } },
+    };
+
+    const first = await run(recipe);
+    assert.equal(first.report.pages.rendered, 1);
+    assert.equal(first.items.length, 2);
+
+    const second = await run(recipe);
+    assert.equal(second.report.pages.fromCache, 1, 'run 2 should be served from cache');
+    assert.equal(second.report.pages.rendered, 0, 'and must not launch a browser');
+    assert.equal(second.items.length, 2);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('a rendered cache entry is not served to a render.mode: never run', opts, async () => {
+  const fs = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'harvest-rendercache3-'));
+
+  try {
+    const extract = { item: { selector: '.item', fields: { name: '.item__name' } } };
+
+    // Populate the cache from a rendered run.
+    await run({
+      start_urls: [`${base}/`],
+      render: { mode: 'always', wait_for_selector: '.item', wait_until: 'networkidle' },
+      cache: { enabled: true, dir },
+      extract,
+    });
+
+    // A run that doesn't want rendering may reuse it — a rendered body is a
+    // superset of the raw one, so this is safe and saves a request.
+    const plain = await run({
+      start_urls: [`${base}/`],
+      render: { mode: 'never' },
+      cache: { enabled: true, dir },
+      extract,
+    });
+    assert.equal(plain.report.pages.rendered, 0);
+    assert.equal(plain.items.length, 2, 'the cached rendered body should still extract');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('a required action that fails surfaces as a render error', opts, async () => {
   const { report } = await run({
     start_urls: [`${base}/`],

@@ -193,6 +193,9 @@ books finished in 1m 42s
 
 ### Operations
 
+- **`harvest profile`** — measures where a run's wall time actually goes
+  (rate-limit wait, network, rendering, parsing) and says what would help,
+  rather than leaving you to guess between four indistinguishable causes
 - **Crash-safe checkpointing** — `--resume` continues an interrupted crawl
 - **Per-host priority frontier** with canonical URL de-duplication
 - **Field health reporting** — the thing that catches silent breakage
@@ -244,6 +247,7 @@ if (report.fieldHealth.some((f) => f.status === 'broken')) {
 |---|---|
 | `harvest ui` | Open the visual interface in your browser |
 | `harvest run <recipe>` | Run a scrape |
+| `harvest profile <recipe>` | Measure where a run's time goes, and what would help |
 | `harvest inspect <url>` | Analyse a page, suggest selectors, generate a recipe |
 | `harvest test <recipe>` | Dry-run extraction on one page, with coverage bars |
 | `harvest quick <url>` | Ad-hoc scrape, no recipe |

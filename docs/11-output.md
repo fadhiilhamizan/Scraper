@@ -224,6 +224,13 @@ The seen-set survives between runs, so a nightly job appends only records it
 hasn't emitted before. For SQLite, `upsert_key` achieves the same with updates
 instead of appends.
 
+> **Upgrading an existing seen-set.** Record hashing changed so that
+> `case_sensitive` and `trim_whitespace` are actually honoured for object-valued
+> records (they were silently ignored before). A store written by an older
+> version is therefore refused rather than loaded, with a warning — reusing it
+> would match nothing and re-emit your whole dataset while appearing to work.
+> Delete the file to start a fresh seen-set.
+
 ---
 
 ## Custom destinations

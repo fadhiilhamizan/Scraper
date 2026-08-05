@@ -42,14 +42,60 @@ export class Page {
 
     this.$ = cheerio.load(this.html, { baseURI: url }, true);
     /** Honour `<base href>` when resolving relative links. */
-    this.baseUrl = this.$('base[href]').first().attr('href')
-      ? resolveUrl(this.$('base[href]').first().attr('href'), url) ?? url
-      : url;
+    const baseHref = this.$('base[href]').first().attr('href');
+    this.baseUrl = baseHref ? resolveUrl(baseHref, url) ?? url : url;
 
-    this.#jsonLdCache = null;
+    this.invalidate();
   }
 
+  /*
+   * Memoised readers.
+   *
+   * Every one of these is called once per *field per record* by the extractor,
+   * yet each recomputes a whole-document view. `microdata()` is the worst:
+   * O(scopes × properties × depth) per call, so five microdata fields over a
+   * hundred records rebuilt the same document five hundred times. Memoising
+   * turns that from quadratic in records into constant.
+   */
   #jsonLdCache;
+  #jsonCache;
+  #metaCache;
+  #microdataCache;
+  #tableCache;
+  #textCache;
+
+  /**
+   * Drop every memo. Call after anything mutates the DOM — the `onPage` hook
+   * receives the live page and may rewrite it.
+   */
+  invalidate() {
+    this.#jsonLdCache = null;
+    this.#jsonCache = undefined;
+    this.#metaCache = null;
+    this.#microdataCache = null;
+    this.#tableCache = new Map();
+    this.#textCache = new Map();
+  }
+
+  /**
+   * The whole response body parsed as JSON, memoised.
+   *
+   * The extractor used to memoise this on its per-record context object, which
+   * is rebuilt by spread for every container — so the memo landed on a throwaway
+   * copy and a `from: json` field re-parsed the entire body once per record.
+   * Holding it on the page survives every context copy.
+   *
+   * @returns {any|null} null when the body isn't JSON.
+   */
+  json() {
+    if (this.#jsonCache !== undefined) return this.#jsonCache;
+    try {
+      this.#jsonCache = JSON.parse(this.html);
+    } catch {
+      this.#jsonCache = null;
+    }
+    return this.#jsonCache;
+  }
 
   /** The raw domhandler root node — the context for XPath. */
   get root() {
@@ -137,6 +183,14 @@ export class Page {
    * across element boundaries.
    */
   text(selector = 'body') {
+    const cached = this.#textCache.get(selector);
+    if (cached !== undefined) return cached;
+    const result = this.#computeText(selector);
+    this.#textCache.set(selector, result);
+    return result;
+  }
+
+  #computeText(selector) {
     const scope = selector ? this.$(selector) : this.$.root();
     if (scope.length === 0) return '';
 
@@ -168,6 +222,7 @@ export class Page {
 
   /** `<meta>` tags as a flat object, keyed by `name` or `property`. */
   metaTags() {
+    if (this.#metaCache) return this.#metaCache;
     const out = {};
     this.$('meta').each((_, el) => {
       const $el = this.$(el);
@@ -175,7 +230,10 @@ export class Page {
       const value = $el.attr('content');
       if (key && value != null) out[key.toLowerCase()] = value;
     });
-    return out;
+    // Frozen because `from: meta` with no `path` hands this straight to user
+    // code; a caller mutating it would silently corrupt every later read.
+    this.#metaCache = Object.freeze(out);
+    return this.#metaCache;
   }
 
   /** Canonical URL if the page declares one. */
@@ -266,8 +324,13 @@ export class Page {
     return out;
   }
 
-  /** Microdata (`itemscope`/`itemprop`) as nested objects. */
+  /** Microdata (`itemscope`/`itemprop`) as nested objects. Memoised. */
   microdata() {
+    this.#microdataCache ??= this.#computeMicrodata();
+    return this.#microdataCache;
+  }
+
+  #computeMicrodata() {
     const readScope = (scopeEl) => {
       const item = {};
       const type = this.$(scopeEl).attr('itemtype');
@@ -311,6 +374,14 @@ export class Page {
    * header cells and both `<th>`-in-`<thead>` and first-row header styles.
    */
   tables(selector = 'table') {
+    const cached = this.#tableCache.get(selector);
+    if (cached !== undefined) return cached;
+    const result = this.#computeTables(selector);
+    this.#tableCache.set(selector, result);
+    return result;
+  }
+
+  #computeTables(selector) {
     return this.select(selector)
       .toArray()
       .map((table) => {

@@ -64,9 +64,28 @@ export const DEFAULT_CONFIG = {
     requestsPerSecond: 1,
     burst: 1,
     minDelayMs: 0,
-    jitterMs: 250,
+    /**
+     * Random extra delay, as a fraction of the request interval — not an
+     * absolute number of milliseconds. Jitter's value is variance *relative to*
+     * the spacing, so a fixed ±125 ms is useful at 1 req/s and a hard ceiling at
+     * 50. At the default rate, `0.25` is identical to the old `jitter_ms: 250`.
+     * Set `0` for exact pacing.
+     */
+    jitterRatio: 0.25,
+    maxJitterMs: 2000,
     adaptive: true,
     throttlePenaltyMs: 30_000,
+  },
+
+  /**
+   * Why you are entitled to the request rate below. Purely declarative — it
+   * gates a warning, never behaviour — but it is recorded in the run report,
+   * which is what makes an aggressive rate auditable rather than anonymous.
+   */
+  authorization: {
+    /** public | owner | permission | api-terms */
+    basis: 'public',
+    note: null,
   },
 
   retry: {
@@ -93,6 +112,12 @@ export const DEFAULT_CONFIG = {
   robots: {
     enabled: true,
     respectCrawlDelay: true,
+    /**
+     * Ignore `Crawl-delay` while still enforcing Allow/Disallow. Narrower than
+     * turning robots.txt off, and the right tool for a site you own whose
+     * `Crawl-delay` is aimed at other crawlers.
+     */
+    ignoreCrawlDelay: false,
     userAgent: null,
     /** What to do when robots.txt can't be fetched (5xx / network error). */
     onError: 'deny',
@@ -201,23 +226,35 @@ export const DEFAULT_CONFIG = {
 
 /** Presets applied by `--preset`, layered under the recipe's own settings. */
 export const PRESETS = {
-  /** Fast, for sites you own or that explicitly permit heavy crawling. */
+  /**
+   * For a site you own, or where you have written permission. Named for the
+   * justification rather than the effect: `fast` invites "I want it fast",
+   * `owned` invites "do I own this?". Does **not** disable robots.txt — that
+   * stays a separate, explicit act.
+   */
+  owned: {
+    concurrency: 32,
+    concurrencyPerHost: 16,
+    rateLimit: { requestsPerSecond: 50, burst: 20, jitterRatio: 0.05 },
+    authorization: { basis: 'owner' },
+  },
+  /** Fast, for sites that explicitly permit heavy crawling. */
   fast: {
     concurrency: 16,
     concurrencyPerHost: 8,
-    rateLimit: { requestsPerSecond: 8, burst: 8, jitterMs: 50 },
+    rateLimit: { requestsPerSecond: 8, burst: 8, jitterRatio: 0.1 },
   },
   /** The default posture, stated explicitly. */
   polite: {
     concurrency: 4,
     concurrencyPerHost: 2,
-    rateLimit: { requestsPerSecond: 1, burst: 1, jitterMs: 250 },
+    rateLimit: { requestsPerSecond: 1, burst: 1, jitterRatio: 0.25 },
   },
   /** For fragile or aggressively protected targets. */
   careful: {
     concurrency: 2,
     concurrencyPerHost: 1,
-    rateLimit: { requestsPerSecond: 0.33, burst: 1, minDelayMs: 3000, jitterMs: 1500 },
+    rateLimit: { requestsPerSecond: 0.33, burst: 1, minDelayMs: 3000, jitterRatio: 0.5 },
     retry: { maxAttempts: 5, baseDelayMs: 5000 },
   },
   /** JavaScript-heavy sites. */
@@ -225,7 +262,7 @@ export const PRESETS = {
     render: { mode: 'always', waitUntil: 'networkidle' },
     concurrency: 2,
     concurrencyPerHost: 1,
-    rateLimit: { requestsPerSecond: 0.5, burst: 1 },
+    rateLimit: { requestsPerSecond: 0.5, burst: 1, jitterRatio: 0.125 },
   },
   /** Iterating on selectors: cache everything, small run, verbose. */
   develop: {

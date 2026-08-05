@@ -53,6 +53,8 @@ const FLAG_SPEC = {
     template: 'string', force: 'boolean',
     // ui
     port: 'number', host: 'string', dir: 'string', open: 'boolean',
+    // profile
+    dry: 'boolean', records: 'number',
   },
   aliases: {
     h: 'help', v: 'verbose', V: 'version', q: 'quiet', o: 'output', f: 'format',
@@ -74,6 +76,7 @@ ${C.b}COMMANDS${C.x}
 ${formatOptions([
     ['ui', 'Open the visual interface in your browser'],
     ['run <recipe>', 'Run a scrape from a recipe file'],
+    ['profile <recipe>', 'Measure where a run\'s time goes, and what would help'],
     ['init [name]', 'Create a new recipe from a template'],
     ['inspect <url>', 'Analyse a page and suggest selectors'],
     ['test <recipe>', 'Fetch one page and show what would be extracted'],
@@ -102,6 +105,26 @@ Full documentation is in ./docs/.`;
 }
 
 const COMMAND_HELP = {
+  profile: `${C.b}harvest profile <recipe>${C.x} — why is this slow?
+
+Throughput problems nearly always have one of four causes, and they produce
+indistinguishable numbers while needing opposite fixes: the politeness budget
+you configured, a robots.txt Crawl-delay overriding it, headless rendering, or
+one request per record. This measures which it is instead of guessing.
+
+${C.b}OPTIONS${C.x}
+${formatOptions([
+    ['    --dry', 'Arithmetic only — predict the ceiling, make no requests'],
+    ['    --limit <n>', 'Pages to sample (default 25)'],
+    ['    --records <n>', 'Project the time for this many records (default 1000)'],
+    ['-p, --preset <name>', 'Profile as though this preset were applied'],
+  ])}
+
+${C.b}EXAMPLES${C.x}
+  harvest profile shop.yaml --dry        ${C.d}# instant, offline${C.x}
+  harvest profile shop.yaml              ${C.d}# sample 25 pages and diagnose${C.x}
+  harvest profile shop.yaml -p owned     ${C.d}# what would this preset buy me?${C.x}`,
+
   ui: `${C.b}harvest ui${C.x} — the visual interface
 
 Starts a small local web server and opens it in your browser. Everything the
@@ -629,6 +652,47 @@ async function resolveWorkspace(explicit) {
   return process.cwd();
 }
 
+async function cmdProfile(positional, flags) {
+  const recipePath = positional[0];
+  if (!recipePath) throw new ConfigError('Which recipe? Usage: harvest profile <recipe.yaml>');
+
+  const { renderDryProfile, renderMeasuredProfile, sampleRun, predictPacing } = await import('./profile.js');
+  const { formatReport } = await import('../core/report.js');
+
+  const presets = flags.preset ?? [];
+  const { config } = await loadRecipe(recipePath, {
+    presets,
+    overrides: buildOverrides(flags),
+  });
+  const targetRecords = flags.records ?? 1000;
+
+  // What a faster preset would *actually* deliver for this recipe. Computed
+  // rather than assumed: presets layer under the recipe, so one that pins
+  // `rate_limit` wins and the preset changes nothing.
+  let faster = null;
+  if (!presets.includes('owned')) {
+    try {
+      const { config: owned } = await loadRecipe(recipePath, { presets: [...presets, 'owned'] });
+      faster = { name: 'owned', rps: predictPacing(owned).rps };
+    } catch { /* the comparison is a nicety, not worth failing over */ }
+  }
+
+  process.stdout.write(`${renderDryProfile(config, { targetRecords })}\n`);
+  if (flags.dry) return 0;
+
+  const pages = flags.limit ?? 25;
+  process.stderr.write(`${C.d}  Sampling ${pages} pages (nothing is written)…${C.x}\n`);
+
+  const report = await sampleRun(config, { pages });
+
+  // The timing and pacing blocks are the same ones a normal run prints; no
+  // point maintaining a second renderer.
+  process.stdout.write(formatReport(report, { color: !!C.b }));
+  process.stdout.write(`${renderMeasuredProfile(report, config, { targetRecords, faster })}\n`);
+
+  return report.pages.ok > 0 ? 0 : 1;
+}
+
 async function cmdUi(positional, flags) {
   const { createServer, openBrowser } = await import('../ui/server.js');
 
@@ -893,6 +957,7 @@ function installSignalHandlers(scraper, logger) {
 const COMMANDS = {
   ui: cmdUi,
   run: cmdRun,
+  profile: cmdProfile,
   init: cmdInit,
   inspect: cmdInspect,
   test: cmdTest,

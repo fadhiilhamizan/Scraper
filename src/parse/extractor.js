@@ -144,15 +144,10 @@ function resolveRaw(spec, ctx) {
       }
       case 'json': {
         // The whole response body parsed as JSON — for scraping a site's API.
-        let parsed = ctx.json;
-        if (parsed === undefined) {
-          try {
-            parsed = JSON.parse(response?.body ?? page.html);
-          } catch {
-            parsed = null;
-          }
-          ctx.json = parsed;
-        }
+        // Memoised on the page, not on `ctx`: the context is rebuilt by spread
+        // for every container, so a per-context memo re-parsed the entire body
+        // once per record.
+        const parsed = page.json();
         return spec.path ? getByPath(parsed, spec.path) : parsed;
       }
       case 'text':

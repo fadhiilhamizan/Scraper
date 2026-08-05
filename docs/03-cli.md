@@ -8,6 +8,7 @@ harvest <command> [options]
 |---|---|
 | [`ui`](#harvest-ui) | Open the visual interface in a browser |
 | [`run`](#harvest-run) | Run a scrape from a recipe |
+| [`profile`](#harvest-profile) | Measure where a run's time goes |
 | [`init`](#harvest-init) | Create a recipe from a template |
 | [`inspect`](#harvest-inspect) | Analyse a page and suggest selectors |
 | [`test`](#harvest-test) | Dry-run extraction on a single page |
@@ -129,6 +130,38 @@ harvest run shop.yaml | jq -r '.title'        # NDJSON on stdout
 
 Pressing `Ctrl+C` once finishes in-flight requests and shuts down cleanly
 (writing a checkpoint if `--resume` is on). Pressing it twice quits immediately.
+
+---
+
+## `harvest profile`
+
+```bash
+harvest profile <recipe> [options]
+```
+
+Answers "why is this slow?" by measuring rather than guessing. Throughput
+problems have four common causes that produce indistinguishable numbers and need
+opposite fixes: the politeness budget you configured, a robots.txt `Crawl-delay`
+overriding it, headless rendering, or one request per record.
+
+| Option | Description |
+|---|---|
+| `--dry` | Arithmetic only — predict the ceiling, make no requests |
+| `--limit <n>` | Pages to sample (default 25) |
+| `--records <n>` | Project the time for this many records (default 1000) |
+| `-p, --preset <name>` | Profile as though this preset were applied |
+
+```bash
+harvest profile shop.yaml --dry     # instant, offline
+harvest profile shop.yaml           # sample and diagnose
+```
+
+`--dry` also calls out the most common misunderstanding: on a single-host crawl,
+the rate limit is per host, so raising `concurrency` cannot help.
+
+Sampled runs write nothing and are capped, so they're safe to run against a live
+site. Full guide: [Troubleshooting → the run is very
+slow](10-troubleshooting.md#the-run-is-very-slow).
 
 ---
 

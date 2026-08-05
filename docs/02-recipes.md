@@ -160,10 +160,26 @@ rate_limit:
   requests_per_second: 1     # sustained, per host
   burst: 1                   # token bucket capacity
   min_delay_ms: 0            # hard floor between requests to one host
-  jitter_ms: 250             # random extra delay; breaks the metronome pattern
+  jitter_ratio: 0.25         # random extra delay, as a FRACTION of the interval
+  max_jitter_ms: 2000        # absolute cap on that jitter
   adaptive: true             # halve the rate on 429/503, recover slowly
   throttle_penalty_ms: 30000 # pause after an explicit 429
 ```
+
+**`requests_per_second` is per host.** A crawl of one domain gets that rate no
+matter how high `concurrency` is — extra workers simply sit idle. This is the
+most common source of "why is it slow?"; `harvest profile --dry` says so
+explicitly.
+
+**Jitter is a fraction of the interval, not a fixed number of milliseconds.**
+Its purpose is variance *relative to* the spacing, so a fixed ±125 ms is
+meaningful at 1 req/s and a hard ceiling at 50. The mean interval works out at
+`(1000 / requests_per_second) × (1 + jitter_ratio / 2)`, so the default costs
+about 11%. Set `jitter_ratio: 0` for exact pacing.
+
+> **Migrating from `jitter_ms`** — the old key still works and is converted
+> automatically (`jitter_ms × rps / 1000`), with a warning. At the old defaults
+> (250 ms at 1 req/s) that is exactly `0.25`, so existing recipes are unchanged.
 
 `adaptive` is AIMD — the same idea TCP congestion control uses. On a 429 the
 rate halves and (if the server sent `Retry-After`, or the status was 429) the
@@ -171,7 +187,21 @@ host pauses; after a run of clean responses it climbs back. This is what keeps a
 long crawl from earning a ban.
 
 `robots.txt` `Crawl-delay` raises `min_delay_ms` automatically; the stricter of
-the two always wins.
+the two always wins. When it does, `requests_per_second` has no effect at all —
+the run report says so.
+
+### `authorization`
+
+```yaml
+authorization:
+  basis: public        # public | owner | permission | api-terms
+  note: "written permission from ops@example.com, 2026-01-12"
+```
+
+Purely declarative — it gates a warning, never behaviour. Above 4 req/s or 4
+concurrent per host you get a warning unless a basis other than `public` is
+declared. It is recorded in `report.posture`, which is what makes an aggressive
+rate auditable rather than anonymous.
 
 ### `retry`
 
@@ -502,11 +532,16 @@ harvest run r.yaml --preset careful
 
 | Preset | Effect |
 |---|---|
-| `fast` | 16 concurrent, 8 req/s — for sites you own or that permit it |
+| `owned` | 50 req/s, 32 concurrent — **only** for a site you own or have permission for. Declares `authorization.basis: owner`. Does *not* disable robots.txt. |
+| `fast` | 16 concurrent, 8 req/s — for sites that explicitly permit it |
 | `polite` | the defaults, stated explicitly |
-| `careful` | 2 concurrent, 1 request every 3s, 5 retries |
+| `careful` | 2 concurrent, 1 request every ~3.8s, 5 retries |
 | `spa` | rendering always on, low concurrency |
 | `develop` | 5 pages, caching on, debug logging |
+
+Because presets layer *under* the recipe, a recipe that sets `rate_limit` or
+`concurrency` explicitly will override them — `harvest profile` tells you when
+that's happening rather than letting you wonder why a preset did nothing.
 
 ---
 

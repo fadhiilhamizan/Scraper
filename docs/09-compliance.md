@@ -120,6 +120,45 @@ smaller sites.
 
 ---
 
+## Declaring why you may go fast
+
+The defaults are conservative. When you raise them, say why:
+
+```yaml
+rate_limit:
+  requests_per_second: 20
+authorization:
+  basis: owner        # public | owner | permission | api-terms
+  note: "written permission from ops@example.com, 2026-01-12"
+```
+
+This changes no behaviour — it gates a warning and is recorded in
+`report.posture`. Above 4 req/s or 4 concurrent per host, a run with
+`basis: public` prints:
+
+```
+rate_limit.requests_per_second: 20 and concurrency_per_host: 8 are well above
+the polite default. If you own this site or have permission, declare it with
+`authorization: { basis: owner }`. Otherwise lower them.
+```
+
+The point is attribution. A fast run that records *why* it was entitled to be
+fast is defensible; an anonymous one is just fast. `--preset owned` sets
+`basis: owner` for you — and deliberately does **not** disable robots.txt, which
+remains a separate, explicit act.
+
+For a site you own that publishes a `Crawl-delay` aimed at other crawlers:
+
+```yaml
+robots:
+  ignore_crawl_delay: true   # still enforces Allow/Disallow
+```
+
+That is narrower than `robots.enabled: false`, and it is the right tool when the
+only thing in your way is your own configuration.
+
+---
+
 ## Identify yourself
 
 ```yaml

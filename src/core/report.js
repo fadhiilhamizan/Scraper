@@ -110,6 +110,34 @@ export function buildReport(scraper, outputs = []) {
     hosts: snapshot.hosts,
     latency: snapshot.histograms.request_duration_ms ?? null,
 
+    /**
+     * The stance this run took, recorded so an aggressive rate is attributable
+     * rather than anonymous. See docs/09-compliance.md.
+     */
+    posture: {
+      basis: config.authorization?.basis ?? 'public',
+      note: config.authorization?.note ?? null,
+      requestsPerSecond: config.rateLimit.requestsPerSecond,
+      concurrencyPerHost: config.concurrencyPerHost,
+      robotsEnforced: config.robots.enabled,
+      identifiesAs: config.robots.userAgent,
+    },
+
+    timing: buildTiming(scraper, snapshot, durationMs),
+    pacing: scraper.rateLimiter.snapshot(),
+    efficiency: {
+      requestsPerRecord: counters.itemsWritten
+        ? +(metrics.get('requests_total') / counters.itemsWritten).toFixed(2)
+        : null,
+      recordsPerPage: counters.pagesOk
+        ? +(counters.itemsExtracted / counters.pagesOk).toFixed(2)
+        : 0,
+      cacheHitRate: scraper.cache.stats.hitRate,
+      renderRate: counters.pagesOk
+        ? +((counters.pagesRendered / counters.pagesOk) * 100).toFixed(1)
+        : 0,
+    },
+
     subsystems: {
       cache: scraper.cache.stats,
       dedupe: scraper.dedupe.stats,
@@ -126,6 +154,59 @@ export function buildReport(scraper, outputs = []) {
     outputs: Array.isArray(outputs) ? outputs.flat() : [outputs],
     warnings,
     counters: snapshot.counters,
+  };
+}
+
+/**
+ * Where the wall clock actually went.
+ *
+ * Shares are of `concurrency × wallMs`, not `wallMs`. With work overlapping
+ * across workers the buckets sum to more than the elapsed time, and worker-time
+ * is the only denominator that makes the percentages add up. `unaccounted` is
+ * the self-check: if it grows large, the instrumentation has a gap.
+ */
+function buildTiming(scraper, snapshot, durationMs) {
+  const total = (name) => snapshot.histograms[name]?.sum ?? 0;
+
+  const buckets = {
+    rateLimitWait: total('wait_ratelimit_ms'),
+    retryWait: total('wait_retry_ms'),
+    network: total('net_ms'),
+    render: total('render_ms'),
+    robots: total('robots_ms'),
+    cacheLookup: total('cache_lookup_ms'),
+    parse: total('parse_html_ms'),
+    extract: total('extract_ms'),
+    discover: total('discover_ms'),
+    write: total('write_ms'),
+    idle: total('worker_idle_ms'),
+  };
+
+  const concurrency = Math.max(1, scraper.config.concurrency ?? 1);
+  const workerMs = concurrency * durationMs;
+  const measured = Object.values(buckets).reduce((a, b) => a + b, 0);
+
+  const out = {};
+  for (const [name, ms] of Object.entries(buckets)) {
+    out[name] = { ms: Math.round(ms), pct: workerMs ? +((ms / workerMs) * 100).toFixed(1) : 0 };
+  }
+  const unaccounted = Math.max(0, workerMs - measured);
+  out.unaccounted = {
+    ms: Math.round(unaccounted),
+    pct: workerMs ? +((unaccounted / workerMs) * 100).toFixed(1) : 0,
+  };
+
+  // The single most useful sentence in the report: what to fix first.
+  const [dominant] = Object.entries(out)
+    .filter(([name]) => name !== 'unaccounted')
+    .sort(([, a], [, b]) => b.ms - a.ms);
+
+  return {
+    wallMs: durationMs,
+    concurrency,
+    workerMs: Math.round(workerMs),
+    dominant: dominant?.[1].ms > 0 ? dominant[0] : null,
+    buckets: out,
   };
 }
 
@@ -203,6 +284,9 @@ export function formatReport(report, { color = true } = {}) {
     lines.push(`  Output   ${c.cyan}${output.destination}${c.reset} ${c.dim}(${output.format}, ${output.records} records)${c.reset}`);
   }
 
+  lines.push(...formatTiming(report, c));
+  lines.push(...formatPacing(report, c));
+
   const problemFields = report.fieldHealth.filter((f) => f.status !== 'ok');
   if (problemFields.length) {
     lines.push('');
@@ -233,6 +317,97 @@ export function formatReport(report, { color = true } = {}) {
   lines.push(c.dim + rule + c.reset);
   lines.push('');
   return lines.join('\n');
+}
+
+const BUCKET_LABELS = {
+  rateLimitWait: 'rate-limit wait',
+  retryWait: 'retry wait',
+  network: 'network',
+  render: 'rendering',
+  robots: 'robots.txt',
+  cacheLookup: 'cache lookup',
+  parse: 'parsing',
+  extract: 'extraction',
+  discover: 'link discovery',
+  write: 'writing',
+  idle: 'idle (no work)',
+  unaccounted: 'unaccounted',
+};
+
+/** "Where the time went" — the answer to "why is this slow?". */
+function formatTiming(report, c) {
+  const timing = report.timing;
+  if (!timing) return [];
+
+  const shown = Object.entries(timing.buckets)
+    .filter(([, v]) => v.pct >= 0.5)
+    .sort(([, a], [, b]) => b.ms - a.ms);
+  if (shown.length === 0) return [];
+
+  const lines = ['', `  ${c.bold}Where the time went${c.reset} ${c.dim}(${timing.concurrency} worker`
+    + `${timing.concurrency === 1 ? '' : 's'} × ${formatDuration(timing.wallMs)} `
+    + `= ${formatDuration(timing.workerMs)} of worker time)${c.reset}`];
+
+  for (const [name, value] of shown) {
+    const filled = Math.round((value.pct / 100) * 20);
+    const bar = '█'.repeat(filled) + '░'.repeat(20 - filled);
+    const colour = name === 'rateLimitWait' ? c.cyan : name === 'unaccounted' ? c.dim : '';
+    lines.push(
+      `    ${(BUCKET_LABELS[name] ?? name).padEnd(16)}`
+      + `${formatDuration(value.ms).padStart(9)}  ${colour}${bar}${c.reset} `
+      + `${String(value.pct).padStart(5)}%`,
+    );
+  }
+
+  // Idle is a symptom of the per-host rate limit, not an independent problem.
+  // Without this note the obvious reading is "add more workers", which is the
+  // one change that cannot help.
+  if (timing.buckets.idle?.pct > 20 && timing.concurrency > 1) {
+    lines.push(
+      `    ${c.dim}idle is spare workers with nothing to do — the per-host rate limit is the`
+      + ` constraint,${c.reset}`,
+    );
+    lines.push(`    ${c.dim}so raising \`concurrency\` will not help. Run \`harvest profile\` for the full picture.${c.reset}`);
+  }
+  return lines;
+}
+
+/** Configured versus achieved rate, and what is actually setting the pace. */
+function formatPacing(report, c) {
+  const pacing = (report.pacing ?? []).filter((h) => h.requests > 1);
+  if (pacing.length === 0) return [];
+
+  const lines = ['', `  ${c.bold}Pacing${c.reset}`];
+  for (const host of pacing.slice(0, 8)) {
+    const pct = host.configuredRps
+      ? Math.round((host.achievedRps / host.configuredRps) * 100)
+      : 100;
+    lines.push(
+      `    ${host.host.padEnd(28)}${c.dim}configured${c.reset} ${host.configuredRps}/s `
+      + `${c.dim}→ achieved${c.reset} ${host.achievedRps}/s ${c.dim}(${pct}%)${c.reset}`,
+    );
+    if (host.crawlDelayBinding) {
+      lines.push(
+        `      ${c.yellow}!${c.reset} robots.txt Crawl-delay of ${host.crawlDelayMs / 1000}s is setting `
+        + `the pace — ${c.bold}requests_per_second has no effect here${c.reset}`,
+      );
+    }
+    if (host.throttleEvents > 0) {
+      lines.push(
+        `      ${c.yellow}!${c.reset} throttled ${host.throttleEvents}× — the adaptive limiter reduced `
+        + `the rate to ${host.rate}/s. Lower your configured rate to match.`,
+      );
+    }
+  }
+
+  const perRecord = report.efficiency?.requestsPerRecord;
+  if (perRecord != null && perRecord >= 2) {
+    lines.push(
+      `      ${c.yellow}!${c.reset} ${perRecord} requests per record — if the listing page already `
+      + 'carries the fields you need, dropping the detail fetch is the biggest win available',
+    );
+  }
+  return lines;
 }
 
 function wrap(text, width, indent) {

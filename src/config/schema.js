@@ -287,6 +287,61 @@ function coerce(config, warnings) {
   if (!config.robots.userAgent) {
     config.robots.userAgent = config.identity.userAgent ?? 'Harvester';
   }
+
+  coerceRateLimit(config, warnings);
+  warnOnAggressiveRate(config, warnings);
+}
+
+/**
+ * Translate the retired absolute `jitter_ms` into the proportional
+ * `jitter_ratio`.
+ *
+ * The conversion is `jitter_ms × rps / 1000`, which is exact: the old code slept
+ * a flat `0..jitter_ms` on top of a `1000/rps` interval, so expressing it as a
+ * fraction of that interval reproduces the same distribution. At the old
+ * defaults (250 ms, 1 req/s) it yields exactly 0.25.
+ */
+function coerceRateLimit(config, warnings) {
+  const rate = config.rateLimit;
+  if (rate.jitterMs === undefined) return;
+
+  const legacy = Number(rate.jitterMs);
+  delete rate.jitterMs;
+  if (!Number.isFinite(legacy) || legacy < 0) return;
+
+  // An explicit jitter_ratio always wins over the legacy key.
+  if (rate.jitterRatio !== undefined && rate.jitterRatio !== DEFAULT_CONFIG.rateLimit.jitterRatio) {
+    warnings.push('Both `jitter_ms` and `jitter_ratio` were set — `jitter_ms` is ignored.');
+    return;
+  }
+
+  const interval = Math.max(1000 / (rate.requestsPerSecond || 1), rate.minDelayMs || 0);
+  rate.jitterRatio = Math.min(Math.max(legacy / interval, 0), 1);
+
+  if (legacy !== 250 || rate.requestsPerSecond !== 1) {
+    warnings.push(
+      `\`rate_limit.jitter_ms: ${legacy}\` is deprecated and was converted to ` +
+      `\`jitter_ratio: ${rate.jitterRatio.toFixed(3)}\`. Jitter is now a fraction of the ` +
+      'request interval, so it no longer caps throughput at higher rates.',
+    );
+  }
+}
+
+/** Rates well above the polite default should be attributable, not anonymous. */
+function warnOnAggressiveRate(config, warnings) {
+  const declared = config.authorization?.basis && config.authorization.basis !== 'public';
+  if (declared) return;
+
+  const fast = config.rateLimit.requestsPerSecond > 4 || config.concurrencyPerHost > 4;
+  if (!fast) return;
+
+  warnings.push(
+    `rate_limit.requests_per_second: ${config.rateLimit.requestsPerSecond} and ` +
+    `concurrency_per_host: ${config.concurrencyPerHost} are well above the polite default. ` +
+    'If you own this site or have permission, declare it with ' +
+    '`authorization: { basis: owner }` — it is recorded in the run report. ' +
+    'Otherwise lower them.',
+  );
 }
 
 /** Hard validation — anything that reaches here throws. */
@@ -324,6 +379,16 @@ export function validateConfig(config) {
 
   if (!['deny', 'allow'].includes(config.robots.onError)) {
     errors.push("`robots.on_error` must be 'deny' or 'allow'.");
+  }
+
+  const bases = ['public', 'owner', 'permission', 'api-terms'];
+  if (config.authorization?.basis && !bases.includes(config.authorization.basis)) {
+    errors.push(`\`authorization.basis\` must be one of: ${bases.join(', ')}.`);
+  }
+
+  const ratio = config.rateLimit.jitterRatio;
+  if (ratio != null && (!Number.isFinite(ratio) || ratio < 0 || ratio > 1)) {
+    errors.push('`rate_limit.jitter_ratio` must be between 0 and 1.');
   }
 
   if (!['warn', 'drop', 'quarantine', 'error'].includes(config.validate.onInvalid)) {

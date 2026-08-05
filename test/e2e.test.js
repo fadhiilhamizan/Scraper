@@ -433,6 +433,11 @@ test('an interrupted run resumes from its checkpoint', async () => {
 
   const recipe = {
     start_urls: [`${base}/list`],
+    // One worker, so the interruption point is deterministic. With several,
+    // the scheduler legitimately has every remaining page in flight before
+    // `stop()` lands — in-flight work is finished by design — and how many
+    // pages complete becomes a race rather than a property of resume.
+    concurrency: 1,
     rate_limit: { requests_per_second: 1000, burst: 1000, jitter_ms: 0 },
     logging: { level: 'silent', progress: false },
     crawl: { pagination: { selector: 'a.next', max_pages: 10 } },

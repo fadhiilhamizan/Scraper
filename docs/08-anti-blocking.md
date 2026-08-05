@@ -68,10 +68,17 @@ rate_limit:
   requests_per_second: 2
   burst: 2
   min_delay_ms: 0
-  jitter_ms: 250
+  jitter_ratio: 0.25
   adaptive: true
   throttle_penalty_ms: 30000
 ```
+
+**Jitter is proportional, not absolute.** What defeats pattern detection is
+variance *relative to* the request spacing — a request every 1000 ms ± 125 ms
+looks human; every 20 ms ± 125 ms is just slow. Expressing it as a fraction
+keeps the disguise identical at low rates without capping high ones. (An
+absolute `jitter_ms` did the latter: it hard-capped every configuration at
+~8 req/s, whatever was asked for.)
 
 A `Retry-After` header is always obeyed. A bare 503 halves the rate but doesn't
 impose a hard pause — it usually means "I'm broken right now", not "you're going

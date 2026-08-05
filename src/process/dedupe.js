@@ -17,6 +17,16 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 /**
+ * Bumped whenever the record→hash mapping changes. A persisted store from a
+ * different version cannot be reused: every key would differ, so nothing would
+ * match and the whole dataset would be re-emitted.
+ *
+ * 2 — leaf values are normalised inside nested structures, so `case_sensitive`
+ *     and `trim_whitespace` now apply to object-valued records.
+ */
+const KEY_VERSION = 2;
+
+/**
  * Fixed-memory probabilistic set. Never reports a false negative, so it can
  * only ever *over*-count duplicates — the safe direction for a scraper.
  */
@@ -76,22 +86,37 @@ export class BloomFilter {
   }
 }
 
-/** Stable stringification — key order must not affect the hash. */
-function stableStringify(value) {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+/**
+ * Stable stringification — key order must not affect the hash.
+ *
+ * `normalizeLeaf` is applied to every primitive *inside* the structure. It has
+ * to happen here rather than to the finished string: normalising afterwards
+ * would fold the JSON punctuation too, and normalising only at the top level
+ * (the previous behaviour) silently ignored `case_sensitive` and
+ * `trim_whitespace` for every object-valued record.
+ */
+function stableStringify(value, normalizeLeaf = null) {
+  if (value === null || typeof value !== 'object') {
+    const leaf = normalizeLeaf ? normalizeLeaf(value) : value;
+    return JSON.stringify(leaf) ?? 'null';
+  }
+  if (Array.isArray(value)) return `[${value.map((v) => stableStringify(v, normalizeLeaf)).join(',')}]`;
   const keys = Object.keys(value).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k], normalizeLeaf)}`).join(',')}}`;
 }
 
 /** Normalise a value before hashing so trivial differences don't defeat dedupe. */
-function normalizeForKey(value, { caseSensitive, trimWhitespace }) {
+function normalizeForKey(value, options) {
   if (value == null) return '';
-  if (typeof value === 'object') return stableStringify(value);
-  let s = String(value);
-  if (trimWhitespace) s = s.replace(/\s+/g, ' ').trim();
-  if (!caseSensitive) s = s.toLowerCase();
-  return s;
+  const leaf = (v) => {
+    if (v == null || typeof v !== 'string') return v;
+    let s = v;
+    if (options.trimWhitespace) s = s.replace(/\s+/g, ' ').trim();
+    if (!options.caseSensitive) s = s.toLowerCase();
+    return s;
+  };
+  if (typeof value === 'object') return stableStringify(value, leaf);
+  return String(leaf(String(value)));
 }
 
 export class Deduplicator {
@@ -124,6 +149,8 @@ export class Deduplicator {
     this.seenCount = 0;
     this.duplicateCount = 0;
     this.uniqueCount = 0;
+    /** Set by `load()` when a persisted store could not be reused. */
+    this.incompatibleStore = null;
   }
 
   /** The identity string for a record, before hashing. */
@@ -166,16 +193,13 @@ export class Deduplicator {
     }
 
     const hash = this.hash(record, context);
-    const seen = this.store instanceof Set ? this.store.has(hash) : this.store.has(hash);
 
-    if (seen) {
+    if (this.store.has(hash)) {
       this.duplicateCount += 1;
       return { duplicate: true, hash };
     }
 
-    if (this.store instanceof Set) this.store.add(hash);
-    else this.store.add(hash);
-
+    this.store.add(hash);
     this.seenCount += 1;
     this.uniqueCount += 1;
     return { duplicate: false, hash };
@@ -210,12 +234,35 @@ export class Deduplicator {
     };
   }
 
-  /** Load a previously persisted seen-set (enables incremental runs). */
+  /**
+   * Load a previously persisted seen-set (enables incremental runs).
+   *
+   * A store written under a different key version is refused rather than
+   * loaded. Silently accepting it would look like it worked while every record
+   * hashed differently and got re-emitted — the exact failure an incremental
+   * job is meant to prevent.
+   *
+   * @returns {Promise<number>} entries loaded; 0 when absent or incompatible.
+   */
   async load(file = this.persistPath) {
     if (!file) return 0;
     try {
       const raw = await fs.readFile(file, 'utf8');
       const data = JSON.parse(raw);
+
+      const version = data.keyVersion ?? 1;
+      if (version !== KEY_VERSION) {
+        this.incompatibleStore = {
+          path: file, found: version, expected: KEY_VERSION,
+          message:
+            `The de-duplication store at ${file} was written by an older version ` +
+            '(record hashing changed so that `case_sensitive` and `trim_whitespace` ' +
+            'are honoured). It was ignored, so records seen previously may be ' +
+            'emitted again. Delete the file to silence this.',
+        };
+        return 0;
+      }
+
       if (data.store === 'bloom' && this.store instanceof BloomFilter) {
         this.store.buffer = Uint8Array.from(Buffer.from(data.buffer, 'base64'));
         this.store.bits = data.bits;
@@ -250,6 +297,7 @@ export class Deduplicator {
 
     payload.savedAt = new Date().toISOString();
     payload.strategy = this.strategy;
+    payload.keyVersion = KEY_VERSION;
 
     const tmp = `${file}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(payload), 'utf8');

@@ -44,6 +44,9 @@ export class Histogram {
   snapshot() {
     return {
       count: this.count,
+      // `sum` is the total time spent, which is what time-share accounting
+      // needs — and unlike the percentiles it costs nothing to report.
+      sum: +this.sum.toFixed(2),
       mean: this.count ? +(this.sum / this.count).toFixed(2) : 0,
       min: this.count ? +this.min.toFixed(2) : 0,
       p50: +this.percentile(50).toFixed(2),
@@ -90,6 +93,32 @@ export class Metrics {
     }
     hist.observe(value);
     return hist;
+  }
+
+  /** Total observed time under `name`, in ms. O(1) — no percentile sorting. */
+  totalMs(name, labels = null) {
+    return this.histograms.get(this.#key(name, labels))?.sum ?? 0;
+  }
+
+  /**
+   * Requests per second so far.
+   *
+   * Exists so the progress bar doesn't have to call `snapshot()` — which walks
+   * every histogram and sorts each one's reservoir three times — to obtain two
+   * divisions.
+   */
+  get requestsPerSec() {
+    return +(this.get('requests_total') / Math.max(this.elapsedMs / 1000, 0.001)).toFixed(2);
+  }
+
+  /** Time a synchronous function and record its duration under `name`. */
+  timeSync(name, fn, labels = null) {
+    const t0 = performance.now();
+    try {
+      return fn();
+    } finally {
+      this.observe(name, performance.now() - t0, labels);
+    }
   }
 
   /** Time an async function and record its duration under `name`. */

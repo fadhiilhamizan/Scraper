@@ -86,7 +86,9 @@ export class HttpCache {
       }
 
       this.hits += 1;
-      return { ...entry, fromCache: true, ageMs: age };
+      // Entries written before `rendered` existed are treated as un-rendered,
+      // which is the safe reading: worst case a page is re-rendered once.
+      return { ...entry, rendered: entry.rendered === true, fromCache: true, ageMs: age };
     } catch {
       this.misses += 1;
       return null;
@@ -117,6 +119,10 @@ export class HttpCache {
       headers: response.headers,
       body: response.body,
       contentType: response.contentType,
+      // Whether a browser produced this body. A run that needs rendering must
+      // not be served an entry captured without one — it would get the
+      // un-rendered shell and silently extract nothing.
+      rendered: response.rendered === true,
       cachedAt: Date.now(),
       ttlMs: this.ttlMs,
     };

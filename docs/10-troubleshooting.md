@@ -227,27 +227,80 @@ exists, and using it is you asserting a different basis for access.
 
 ## The run is very slow
 
-Check the report:
-
-```
-Speed    12 pages/min · 3 items/page
-Latency  p50 180ms · p90 320ms · max 2100ms
-```
-
-If latency is low but throughput is too, the limiter is the bottleneck — by
-design. Raise it only as far as the target can comfortably absorb:
+**Measure before changing anything.** Four causes produce indistinguishable
+throughput and need opposite fixes:
 
 ```bash
-harvest run r.yaml --rps 4 -c 8
+harvest profile my-recipe.yaml --dry     # instant, offline: the predicted ceiling
+harvest profile my-recipe.yaml           # sample 25 pages and diagnose
 ```
 
-Look at `subsystems.rateLimiters`: if `rate` is well below `baseRate`, the
-adaptive limiter has been throttling itself because the site pushed back. Lower
-your configured rate to match rather than making it fight every run.
+```
+Where the time went   (4 workers × 11s = 45s of worker time)
+  rate-limit wait       15s  ███████░░░░░░░░░░░░░    35%
+  idle (no work)        25s  ███████████░░░░░░░░░  55.4%
+  network                3s  █░░░░░░░░░░░░░░░░░░░   7.3%
 
-**If rendering is on**, that's the cost — 10–30 pages/min versus 500+ over HTTP.
-Use `mode: auto` rather than `always`, set `wait_for_selector`, keep
-`block_resources` on, and check whether a JSON API exists.
+  Projection  1000 records ≈ 23m 36s at this pace.
+
+  What would actually help
+    ▸ 90% of worker time is the politeness budget you configured.
+```
+
+### The four causes
+
+**1. The politeness budget (most common).** The default is 1 request/second per
+host. 1000 records at ~2 records/page is therefore ~8 minutes, and that is the
+scraper working exactly as configured. The only lever is
+`rate_limit.requests_per_second` — and only if you're entitled to use it:
+
+```yaml
+rate_limit:
+  requests_per_second: 10
+authorization:
+  basis: owner          # or: permission / api-terms
+```
+
+Or `--preset owned` for a site you own.
+
+**2. A robots.txt `Crawl-delay`.** This *overrides* your configured rate
+entirely — raising `requests_per_second` will do nothing. The report flags it:
+
+```
+! robots.txt Crawl-delay of 10s is setting the pace —
+  requests_per_second has no effect here
+```
+
+Honour it, or, on a site you own, set `robots.ignore_crawl_delay: true`.
+
+**3. Rendering.** A browser costs ~1–3 s/page versus ~200 ms for HTTP. Use
+`mode: auto` with `wait_for_selector` so only pages that genuinely need a
+browser get one, and check the Network tab for a JSON endpoint — calling it
+directly is routinely 10–50× faster. See [Dynamic content](07-dynamic-content.md).
+
+**4. One request per record.** If a listing → detail crawl fetches a page per
+record, items/sec can never exceed requests/sec. The report shows
+`requestsPerRecord`; if the listing page already carries the fields you need,
+dropping the detail fetch is usually the single biggest win — and asks the site
+for far less.
+
+### What will *not* help
+
+**Raising `concurrency` on a single-host crawl.** The rate limit is per host, so
+extra workers just sit idle — which is why "idle (no work)" can dominate the
+timing breakdown. That figure is a symptom of the rate limit, not a separate
+problem.
+
+**Switching language.** Per-record CPU is ~25 µs, about 0.005% of wall time on a
+polite run. The bottleneck is network I/O and self-imposed pacing, both of which
+are identical in Python, Go or Rust.
+
+### Other checks
+
+Look at `pacing[]` in the report: if `achievedRps` is well below
+`configuredRps` and `throttleEvents > 0`, the adaptive limiter has been
+throttling itself because the site pushed back. Lower your configured rate to
+match rather than making it fight every run.
 
 **While developing**, use the cache:
 
